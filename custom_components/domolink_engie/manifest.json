@@ -1,0 +1,18 @@
+{
+  "domain": "domolink_engie",
+  "name": "DomoLink ENGIE Électricité & Gaz",
+  "codeowners": [
+    "@SocrateMobile",
+    "@jflavigne"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "recorder"
+  ],
+  "documentation": "https://github.com/SocrateMobile/DomoLink-Engie",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/SocrateMobile/DomoLink-Engie/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

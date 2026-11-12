@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ENGIE Particuliers Sign-In",
+        "description": "Sign in with your ENGIE France Customer Area credentials (Electricity & Gas). A one-time MFA verification code will be requested if enabled on your account.",
+        "data": {
+          "username": "ENGIE Email",
+          "password": "Password",
+          "import_history": "Automatically backfill the last 12 months into Home Assistant Energy Dashboard"
+        }
+      },
+      "mfa_select": {
+        "title": "2-Step Verification (MFA)",
+        "description": "Select how to receive your ENGIE verification code:",
+        "data": {
+          "factor_id": "Verification method"
+        }
+      },
+      "mfa_code": {
+        "title": "Enter Verification Code",
+        "description": "Enter the code received via {factor}. It will not be asked again after setup.",
+        "data": {
+          "code": "Verification code (OTP)"
+        }
+      },
+      "contract": {
+        "title": "Select Contract Account",
+        "description": "Multiple ENGIE contract accounts were found. Select the one to integrate:",
+        "data": {
+          "compte_contrat": "ENGIE Contract Account"
+        }
+      },
+      "reauth_confirm": {
+        "title": "ENGIE Re-authentication Required",
+        "description": "Your ENGIE session expired. Please re-enter your credentials to restore synchronization.",
+        "data": {
+          "username": "ENGIE Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid ENGIE username or password.",
+      "invalid_mfa_code": "Invalid or expired verification code.",
+      "no_mfa_factor": "No compatible MFA factor (SMS/Email) found.",
+      "cannot_connect": "Failed to connect to ENGIE / Okta servers.",
+      "unknown": "Unexpected authentication error."
+    },
+    "abort": {
+      "already_configured": "This ENGIE contract account is already configured.",
+      "no_contracts": "No active contract found on this ENGIE account.",
+      "cannot_connect": "Failed to fetch contracts after authentication.",
+      "reauth_successful": "ENGIE re-authentication successful."
+    }
+  }
+}
