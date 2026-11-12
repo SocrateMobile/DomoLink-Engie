@@ -56,7 +56,11 @@ def _install_ha_stubs() -> None:
         def __init_subclass__(cls, **kwargs: Any) -> None:
             pass
 
+    class OptionsFlow:
+        pass
+
     ce_mod.ConfigFlow = ConfigFlow
+    ce_mod.OptionsFlow = OptionsFlow
     sys.modules["homeassistant.config_entries"] = ce_mod
 
     exc_mod = types.ModuleType("homeassistant.exceptions")
@@ -597,4 +601,56 @@ def test_sec_ko_expiration_retry_and_endpoint_403_handling():
             await client.async_get_estimation_elec("100200300", "600123456")
 
     asyncio.run(_run())
+
+
+def test_v11_frontend_assets_options_flow_and_repartition_sensors():
+    """Verify v1.1.0 frontend files, OptionsFlow, usage repartition sensors, and snapshot builder."""
+    panel_js = os.path.join(COMP_DIR, "frontend", "domolink-engie-panel.js")
+    card_js = os.path.join(COMP_DIR, "frontend", "domolink-engie-card.js")
+    assert os.path.isfile(panel_js)
+    assert os.path.isfile(card_js)
+
+    cfg_flow = _load_mod("config_flow")
+    fake_entry = MagicMock()
+    fake_entry.options = {"scan_interval": 90, "billing_interval": 4}
+    opt_flow = cfg_flow.EngieConfigFlow.async_get_options_flow(fake_entry)
+    assert isinstance(opt_flow, cfg_flow.EngieOptionsFlowHandler)
+
+    by_key = {d.key: d for d in sensor.SENSOR_DESCRIPTIONS}
+    mock_data = {
+        "billing": {
+            "repartition_usages": {
+                "repartitionUsagesElec": [
+                    {"code": "FR", "libelle": "Froid", "valeur": 23.0, "couleur": "2EC8F4"},
+                    {"code": "EC", "libelle": "Eclairage", "valeur": 13.0, "couleur": "29D46E"},
+                ],
+                "repartitionUsagesGaz": [
+                    {"code": "CH", "libelle": "Chauffage", "valeur": 82.0, "couleur": "FFB700"},
+                ],
+            },
+            "services_options": {
+                "services": [
+                    {"code": "ERL", "libelle": "Ma conso+", "prix": "2.99€TTC/mois", "souscriptionService": False},
+                    {"code": "MENS", "libelle": "Mensualisation", "prix": None, "souscriptionService": True},
+                ]
+            },
+            "cheque_energie": {"chequeEnergie": None, "encaissementCheque": False, "datePaiement": None},
+        }
+    }
+    assert by_key["elec_usage_repartition"].value_fn(mock_data) == "Froid (23%)"
+    assert by_key["gaz_usage_repartition"].value_fn(mock_data) == "Chauffage (82%)"
+    assert by_key["account_services_options"].value_fn(mock_data) == 1
+    assert by_key["account_cheque_energie"].value_fn(mock_data) == "Aucun"
+
+    init_mod = _load_mod("__init__")
+    fake_coord = MagicMock()
+    fake_coord.compte_contrat = "600123456"
+    fake_coord.data = {
+        "summary": {"compte_contrat": "600123456", "has_elec": True, "has_gaz": True},
+        "billing": mock_data["billing"],
+    }
+    snap = init_mod._build_account_snapshot(MagicMock(), "entry_1", fake_coord)
+    assert snap["compte_contrat"] == "600123456"
+    assert snap["has_elec"] is True
+    assert snap["billing"]["repartition_usages"]["repartitionUsagesGaz"][0]["valeur"] == 82.0
 
