@@ -1,6 +1,7 @@
 /**
- * DomoLink ENGIE — Home Assistant Sidebar Panel
+ * DomoLink ENGIE — Home Assistant Sidebar Panel (with ZLinky_TIC Auto-Detection & Live Telemetry)
  * Element: <domolink-engie-panel>
+ * Version: 1.3.0
  */
 
 import "./domolink-engie-card.js";
@@ -41,6 +42,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       mode: "moniteur_full",
       default_tab: "linky",
       default_period: "daily",
+      zlinky_device_prefix: "",
       power_sensor: "",
       daily_energy_sensor: "",
       theme: "domolink_dark",
@@ -59,11 +61,39 @@ class DomoLinkEngiePanel extends HTMLElement {
     } else {
       const preview = this.shadowRoot?.querySelector("domolink-engie-card");
       if (preview) preview.hass = hass;
+      if (this._activeTab === "moniteur" && this._snapshot) {
+        this._renderMoniteurInPlace();
+      }
     }
   }
 
   set panel(_panel) {}
   set narrow(_narrow) {}
+
+  _renderMoniteurInPlace() {
+    const host = this.shadowRoot?.getElementById("moniteur-live-host");
+    const acc = this._getCurrentAccount();
+    if (!host || !acc || !window.DomoLinkEngieMoniteur) return;
+    host.innerHTML = window.DomoLinkEngieMoniteur.renderMoniteurHTML(
+      acc,
+      this._hass,
+      this._moniteurState,
+      {},
+      () => this._renderMoniteurInPlace()
+    );
+    host.querySelectorAll("[data-dlm-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._moniteurState.tab = btn.getAttribute("data-dlm-tab");
+        this._renderMoniteurInPlace();
+      });
+    });
+    host.querySelectorAll("[data-dlm-period]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._moniteurState.period = btn.getAttribute("data-dlm-period");
+        this._renderMoniteurInPlace();
+      });
+    });
+  }
 
   async _loadSnapshot() {
     if (!this._hass) return;
@@ -101,7 +131,7 @@ class DomoLinkEngiePanel extends HTMLElement {
     const g = this._cardGen;
     const cc = acc?.compte_contrat || "";
     if (g.kind === "native") {
-      const ent = (k, fallback) => acc?.entities?.[k] || `sensor.engie_${cc}_${fallback}`;
+      const ent = (k, fallback) => acc?.entities?.[k] || `sensor.engie_electricite_${cc}_${fallback}`;
       return [
         "type: vertical-stack",
         "cards:",
@@ -111,11 +141,11 @@ class DomoLinkEngiePanel extends HTMLElement {
         `      - entity: ${ent("elec_monthly_conso", "consommation_electricite_mois")}`,
         `      - entity: ${ent("elec_monthly_cost", "cout_electricite_mois")}`,
         `      - entity: ${ent("elec_annual_conso", "consommation_electricite_annuelle")}`,
-        `      - entity: ${ent("gaz_index_m3", "index_compteur_gaz")}`,
-        `      - entity: ${ent("gaz_monthly_kwh", "consommation_gaz_mois_kwh")}`,
-        `      - entity: ${ent("gaz_monthly_cost", "cout_gaz_mois")}`,
-        `      - entity: ${ent("account_mensualite", "mensualite_globale")}`,
-        `      - entity: ${ent("account_solde", "solde_a_payer")}`,
+        `      - entity: ${acc?.entities?.["gaz_index_m3"] || `sensor.engie_gaz_${cc}_index_compteur_gaz`}`,
+        `      - entity: ${acc?.entities?.["gaz_monthly_kwh"] || `sensor.engie_gaz_${cc}_consommation_gaz_mois_kwh`}`,
+        `      - entity: ${acc?.entities?.["gaz_monthly_cost"] || `sensor.engie_gaz_${cc}_cout_gaz_mois`}`,
+        `      - entity: ${acc?.entities?.["account_mensualite"] || `sensor.engie_compte_${cc}_mensualite_globale`}`,
+        `      - entity: ${acc?.entities?.["account_solde"] || `sensor.engie_compte_${cc}_solde_a_payer`}`,
         "  - type: statistics-graph",
         "    title: Historique Énergie ENGIE",
         "    chart_type: bar",
@@ -123,7 +153,7 @@ class DomoLinkEngiePanel extends HTMLElement {
         "    days_to_show: 365",
         "    entities:",
         `      - ${ent("elec_monthly_conso", "consommation_electricite_mois")}`,
-        `      - ${ent("gaz_monthly_kwh", "consommation_gaz_mois_kwh")}`,
+        `      - ${acc?.entities?.["gaz_monthly_kwh"] || `sensor.engie_gaz_${cc}_consommation_gaz_mois_kwh`}`,
       ].join("\n");
     }
 
@@ -135,6 +165,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       `mode: ${g.mode}`,
       isMoniteurMode ? `default_tab: ${g.default_tab || "linky"}` : null,
       isMoniteurMode ? `default_period: ${g.default_period || "daily"}` : null,
+      isMoniteurMode && g.zlinky_device_prefix ? `zlinky_device_prefix: ${g.zlinky_device_prefix}` : null,
       isMoniteurMode && g.power_sensor ? `power_sensor: ${g.power_sensor}` : null,
       isMoniteurMode && g.daily_energy_sensor ? `daily_energy_sensor: ${g.daily_energy_sensor}` : null,
       !isMoniteurMode ? `theme: ${g.theme}` : null,
@@ -154,6 +185,8 @@ class DomoLinkEngiePanel extends HTMLElement {
     const gr = acc.gaz_releve || {};
     const solde = acc.billing?.solde || {};
     const eng = acc.billing?.engagement || {};
+    const zl = acc.zlinky || {};
+    const zLive = zl.live || {};
 
     return `
       <div class="kpi-grid">
@@ -166,13 +199,19 @@ class DomoLinkEngiePanel extends HTMLElement {
             <div class="big" style="color:#38bdf8">${fmt(ev.month_kwh, 1)} <span>kWh</span></div>
             <div class="subrow">
               <span>Coût mois : <b>${fmt(ev.month_euro, 2)} €</b></span>
-              <span>Var. : <b>${ev.month_variation_pct !== undefined ? `${ev.month_variation_pct > 0 ? "+" : ""}${fmt(ev.month_variation_pct, 0)}%` : "--"}</b></span>
+              <span>Var. : <b>${ev.month_variation_pct !== undefined && ev.month_variation_pct !== null ? `${ev.month_variation_pct > 0 ? "+" : ""}${fmt(ev.month_variation_pct, 0)}%` : "--"}</b></span>
             </div>
             <div class="divider"></div>
             <div class="subrow">
               <span>Cumul annuel : <b>${fmt(ev.year_kwh, 0)} kWh</b></span>
               <span>N-1 : <b>${fmt(ev.year_prev_kwh, 0)} kWh</b> (${ev.year_variation_pct > 0 ? "+" : ""}${fmt(ev.year_variation_pct, 0)}%)</span>
             </div>
+            ${zl.detected ? `
+              <div class="subrow" style="color:#34d399">
+                <span>⚡ ZLinky Live : <b>${zLive.power_va !== null && zLive.power_va !== undefined ? `${fmt(zLive.power_va, 0)} VA` : "--"}</b></span>
+                <span>Index Live : <b>${zLive.index_total_kwh !== null && zLive.index_total_kwh !== undefined ? `${fmt(zLive.index_total_kwh, 1)} kWh` : "--"}</b></span>
+              </div>
+            ` : ""}
             <div class="subrow muted">
               <span>PDL : ${esc(er.idPDL || "--")}</span>
               <span>Prochain relevé : ${esc(er.dateProchaineReleve || "--")}</span>
@@ -206,7 +245,7 @@ class DomoLinkEngiePanel extends HTMLElement {
         <div class="card">
           <div class="card-top">
             <span class="kicker">💶 Budget & Statut</span>
-            <span class="pill ${acc.client_erl ? "ok" : "neutral"}">${acc.client_erl ? "ERL Actif" : "Standard"}</span>
+            <span class="pill ${zl.detected || acc.client_erl ? "ok" : "neutral"}">${zl.detected ? "ZLinky_TIC Actif" : (acc.client_erl ? "ERL Actif" : "Standard")}</span>
           </div>
           <div class="big" style="color:#34d399">${fmt(solde.solde, 2)} <span>€ solde</span></div>
           <div class="subrow">
@@ -250,7 +289,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       </div>
       <div class="card" style="margin-top:16px">
         <div class="card-top"><span class="kicker">📈 Import Rétroactif Home Assistant Recorder</span></div>
-        <p class="muted" style="margin:6px 0 14px">Injecte ou répare les statistiques long-terme dans le Tableau de bord Énergie de Home Assistant (sans doublons).</p>
+        <p class="muted" style="margin:6px 0 14px">Injecte ou répare les statistiques long-terme dans le Tableau de bord Énergie de Home Assistant (sans doublons, avec continuité de somme cumulée).</p>
         <div class="actions">
           <button class="btn" data-import="6">Importer 6 mois</button>
           <button class="btn primary" data-import="12">Importer 12 mois</button>
@@ -385,6 +424,9 @@ class DomoLinkEngiePanel extends HTMLElement {
                     <option value="monthly" ${g.default_period === "monthly" ? "selected" : ""}>Mois (Jan–Déc N vs N-1)</option>
                   </select>
                 </label>
+                <label>Préfixe ZLinky_TIC optionnel
+                  <input id="gen-zlinky-prefix" type="text" value="${esc(g.zlinky_device_prefix || "")}" placeholder="Auto-détection si vide (ex: zlinky_tic)" />
+                </label>
                 <label>Capteur puissance VA optionnel
                   <input id="gen-power-sensor" type="text" value="${esc(g.power_sensor || "")}" placeholder="Auto-détection si vide" />
                 </label>
@@ -423,10 +465,123 @@ class DomoLinkEngiePanel extends HTMLElement {
 
   _renderSettings(acc) {
     const entities = Object.entries(acc.entities || {});
+    const zl = acc.zlinky || {};
+    const zEnabled = zl.enabled !== false;
+    const zDevices = zl.detected_devices || [];
+    const zSlots = zl.slots || [];
+    const zLive = zl.live || {};
+    const availableSensors = zl.available_sensors || [];
+
+    const activePrefix = zl.configured_prefix || zl.device_prefix || "";
+
     return `
+      <datalist id="zlinky-sensors-datalist">
+        ${availableSensors
+          .map(
+            (s) =>
+              `<option value="${esc(s.entity_id)}">${esc(s.friendly_name)} (${esc(s.state)}${s.unit ? " " + esc(s.unit) : ""})</option>`
+          )
+          .join("")}
+      </datalist>
+
+      <div class="card" style="margin-bottom:16px;border-color:rgba(16,185,129,0.35);">
+        <div class="card-top" style="flex-wrap:wrap;gap:10px;">
+          <div>
+            <span class="kicker" style="color:#34d399;">⚡ Passerelle Temps Réel ZLinky_TIC (Zigbee2MQTT · ZHA · deCONZ / Dresden · TIC)</span>
+            <p class="muted" style="margin:4px 0 0;">
+              Associez automatiquement ou manuellement votre capteur Zigbee <b>ZLinky_TIC</b> pour alimenter le Moniteur Énergie en temps réel (Puissance VA, Tension V, Intensité A, PTEC HP/HC, Index live).
+            </p>
+          </div>
+          <div class="actions">
+            <span class="pill ${zl.detected ? "ok" : "neutral"}">
+              ${zl.detected ? `${zl.matched_count || 0} capteur(s) ZLinky détecté(s) (${zl.active_count || 0} en ligne)` : "Aucun ZLinky détecté"}
+            </span>
+            <button class="btn" id="zlinky-autodetect-btn" title="Relancer l'auto-détection complète des entités ZLinky_TIC">🔍 Auto-détecter ZLinky_TIC</button>
+          </div>
+        </div>
+
+        ${zl.detected ? `
+          <div class="zlive-box">
+            <div class="zlive-item"><span>Puissance (SINSTS)</span><b>${zLive.power_va !== null && zLive.power_va !== undefined ? `${fmt(zLive.power_va, 0)} VA` : "--"}</b></div>
+            <div class="zlive-item"><span>Tension (URMS1)</span><b>${zLive.voltage_v !== null && zLive.voltage_v !== undefined ? `${fmt(zLive.voltage_v, 0)} V` : "--"}</b></div>
+            <div class="zlive-item"><span>Intensité (IRMS1)</span><b>${zLive.current_a !== null && zLive.current_a !== undefined ? `${fmt(zLive.current_a, 2)} A` : "--"}</b></div>
+            <div class="zlive-item"><span>Tarif (PTEC)</span><b>${esc(zLive.ptec || "--")}</b></div>
+            <div class="zlive-item"><span>Index Total (EAST)</span><b>${zLive.index_total_kwh !== null && zLive.index_total_kwh !== undefined ? `${fmt(zLive.index_total_kwh, 2)} kWh` : "--"}</b></div>
+            <div class="zlive-item"><span>Index HC / HP</span><b>${zLive.index_hc_kwh !== null && zLive.index_hc_kwh !== undefined ? fmt(zLive.index_hc_kwh, 1) : "--"} / ${zLive.index_hp_kwh !== null && zLive.index_hp_kwh !== undefined ? fmt(zLive.index_hp_kwh, 1) : "--"} kWh</b></div>
+            <div class="zlive-item"><span>Pic Jour (SMAXSN)</span><b>${zLive.max_power_va !== null && zLive.max_power_va !== undefined ? `${fmt(zLive.max_power_va, 0)} VA` : "--"}</b></div>
+            <div class="zlive-item"><span>Souscrite (PREF)</span><b>${zLive.pref_kva !== null && zLive.pref_kva !== undefined ? `${fmt(zLive.pref_kva, 0)} kVA` : "--"}</b></div>
+          </div>
+        ` : ""}
+
+        <div class="divider"></div>
+
+        <div class="zform-top">
+          <label class="chk" style="font-size:13px;font-weight:700;color:#f8fafc;">
+            <input type="checkbox" id="zl-enabled" ${zEnabled ? "checked" : ""} />
+            Activer la fusion Temps Réel ZLinky_TIC dans le Moniteur Énergie
+          </label>
+
+          <div class="zprefix-row">
+            ${zDevices.length ? `
+              <label style="flex:1;min-width:240px;">Appareils ZLinky / TIC détectés dans Home Assistant
+                <select id="zl-device-select">
+                  <option value="">-- Sélectionner un appareil détecté --</option>
+                  ${zDevices
+                    .map(
+                      (d) =>
+                        `<option value="${esc(d.prefix)}" ${d.prefix === activePrefix ? "selected" : ""}>${esc(d.label)} [sensor.${esc(d.prefix)}_*]</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+            ` : ""}
+            <label style="flex:1;min-width:240px;">Nom / Préfixe du capteur ZLinky_TIC (Z2M, ZHA, deCONZ)
+              <input type="text" id="zl-prefix-input" value="${esc(activePrefix)}" placeholder="ex: zlinky_tic ou lixee_zlinky_tic" />
+            </label>
+          </div>
+        </div>
+
+        <div class="zslots-grid">
+          ${zSlots
+            .map((slot) => {
+              const hasEnt = Boolean(slot.entity_id);
+              const isOnline = hasEnt && slot.state && slot.state !== "unknown" && slot.state !== "unavailable";
+              const stateBadge = hasEnt
+                ? `<span class="pill ${isOnline ? "ok" : "warn"}">${slot.is_manual ? "Manuel" : "Auto"} · ${esc(slot.state || "--")}${slot.unit ? " " + esc(slot.unit) : ""}</span>`
+                : `<span class="pill neutral">Non assigné</span>`;
+              return `
+                <div class="zslot-card">
+                  <div class="zslot-head">
+                    <span class="zslot-title">${esc(slot.label)}</span>
+                    ${stateBadge}
+                  </div>
+                  <input
+                    type="text"
+                    class="zslot-input"
+                    list="zlinky-sensors-datalist"
+                    data-zslot-key="${esc(slot.key)}"
+                    value="${esc(slot.entity_id || "")}"
+                    placeholder="${esc(slot.hint || "sensor.zlinky_tic_...")}"
+                  />
+                  <div class="zslot-hint">${esc(slot.hint || "")}</div>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
+
+        <div class="actions" style="margin-top:16px;justify-content:space-between;">
+          <span class="muted">Astuce : laissez un champ vide pour utiliser l'auto-détection, ou saisissez/sélectionnez n'importe quelle entité <code>sensor.*</code> de Home Assistant.</span>
+          <div class="actions">
+            <button class="btn" id="zlinky-clear-btn">♻️ Réinitialiser en Tout-Auto</button>
+            <button class="btn primary" id="zlinky-save-btn">💾 Enregistrer la configuration ZLinky_TIC</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
-        <div class="card-top"><span class="kicker">⚙️ Contrat & Entités Home Assistant (${entities.length})</span></div>
-        <p class="muted" style="margin:6px 0 12px">Pour modifier les intervalles de polling, rendez-vous dans <b>Paramètres → Appareils et services → DomoLink ENGIE → Configurer</b>.</p>
+        <div class="card-top"><span class="kicker">⚙️ Contrat & Entités ENGIE Home Assistant (${entities.length})</span></div>
+        <p class="muted" style="margin:6px 0 12px">Pour modifier les intervalles de polling ENGIE Cloud, vous pouvez aussi passer par <b>Paramètres → Appareils et services → DomoLink ENGIE → Configurer</b>.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Clé interne</th><th>Entity ID Home Assistant</th></tr></thead>
@@ -447,9 +602,14 @@ class DomoLinkEngiePanel extends HTMLElement {
     let bodyHtml = `<div class="card muted">Chargement des données ENGIE...</div>`;
     if (acc) {
       if (this._activeTab === "moniteur" && window.DomoLinkEngieMoniteur) {
-        bodyHtml = window.DomoLinkEngieMoniteur.renderMoniteurHTML(acc, this._hass, this._moniteurState, {});
-      }
-      else if (this._activeTab === "overview") bodyHtml = this._renderOverview(acc);
+        bodyHtml = `<div id="moniteur-live-host">${window.DomoLinkEngieMoniteur.renderMoniteurHTML(
+          acc,
+          this._hass,
+          this._moniteurState,
+          {},
+          () => this._renderMoniteurInPlace()
+        )}</div>`;
+      } else if (this._activeTab === "overview") bodyHtml = this._renderOverview(acc);
       else if (this._activeTab === "history") bodyHtml = this._renderHistoryUsages(acc);
       else if (this._activeTab === "billing") bodyHtml = this._renderBilling(acc);
       else if (this._activeTab === "generator") bodyHtml = this._renderGenerator(acc);
@@ -495,11 +655,21 @@ class DomoLinkEngiePanel extends HTMLElement {
         th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid rgba(148,163,184,0.1); }
         th { color: #94a3b8; font-size: 11px; text-transform: uppercase; }
         .form-grid { display: flex; flex-direction: column; gap: 10px; }
-        .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: #cbd5e1; }
-        input[type="text"], select { background: #1e293b; color: #f8fafc; border: 1px solid rgba(148,163,184,0.25); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+        .form-grid label, .zprefix-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: #cbd5e1; }
+        input[type="text"], select { background: #1e293b; color: #f8fafc; border: 1px solid rgba(148,163,184,0.25); border-radius: 8px; padding: 8px 10px; font-size: 13px; box-sizing: border-box; width: 100%; }
         .chk-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
-        .chk { flex-direction: row !important; align-items: center; gap: 6px; font-weight: 500 !important; }
+        .chk { display: inline-flex; flex-direction: row !important; align-items: center; gap: 8px; font-weight: 500 !important; cursor: pointer; }
         .yaml-box { background: #020617; border: 1px solid rgba(148,163,184,0.2); border-radius: 12px; padding: 12px; font-size: 12px; overflow-x: auto; color: #38bdf8; margin-top: 12px; }
+        .zlive-box { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 12px; padding: 12px; border-radius: 14px; background: rgba(16,185,129,0.07); border: 1px solid rgba(16,185,129,0.22); }
+        .zlive-item { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: #94a3b8; }
+        .zlive-item b { font-size: 14px; color: #f8fafc; }
+        .zform-top { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+        .zprefix-row { display: flex; flex-wrap: wrap; gap: 12px; }
+        .zslots-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+        .zslot-card { background: rgba(30,41,59,0.45); border: 1px solid rgba(148,163,184,0.14); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+        .zslot-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .zslot-title { font-size: 12px; font-weight: 700; color: #e2e8f0; }
+        .zslot-hint { font-size: 11px; color: #64748b; }
         .toast { position: fixed; bottom: 20px; right: 20px; background: #0ea5e9; color: #fff; padding: 10px 16px; border-radius: 12px; font-weight: 700; font-size: 13px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); z-index: 99; }
       </style>
       <div class="wrap">
@@ -509,12 +679,12 @@ class DomoLinkEngiePanel extends HTMLElement {
             <div class="brand-icon">⚡</div>
             <div>
               <h1>DomoLink ENGIE</h1>
-              <p>Électricité Linky · Gaz Gazpar · Facturation · Suite DomoLink v${esc(this._snapshot?.version || "1.1.0")}</p>
+              <p>Électricité Linky · ZLinky_TIC Live · Gaz Gazpar · Facturation · Suite DomoLink v${esc(this._snapshot?.version || "1.3.0")}</p>
             </div>
           </div>
           <div class="actions">
             ${accs.length > 1 ? `
-              <select id="cc-select">
+              <select id="cc-select" style="width:auto;">
                 ${accs.map((a) => `<option value="${esc(a.entry_id)}" ${a.entry_id === acc?.entry_id ? "selected" : ""}>Contrat ${esc(a.compte_contrat)} (${esc(a.ville)})</option>`).join("")}
               </select>
             ` : ""}
@@ -528,7 +698,7 @@ class DomoLinkEngiePanel extends HTMLElement {
           <button class="tab-btn ${this._activeTab === "history" ? "active" : ""}" data-tab="history">📊 Historique & Usages</button>
           <button class="tab-btn ${this._activeTab === "billing" ? "active" : ""}" data-tab="billing">💶 Facturation & Échéancier</button>
           <button class="tab-btn ${this._activeTab === "generator" ? "active" : ""}" data-tab="generator">🎨 Générateur Lovelace</button>
-          <button class="tab-btn ${this._activeTab === "settings" ? "active" : ""}" data-tab="settings">⚙️ Entités & Options</button>
+          <button class="tab-btn ${this._activeTab === "settings" ? "active" : ""}" data-tab="settings">⚙️ Paramétrage & ZLinky_TIC</button>
         </div>
 
         ${bodyHtml}
@@ -554,7 +724,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       try {
         await this._hass.callWS({ type: "domolink_engie/refresh_now", entry_id: acc?.entry_id });
         await this._loadSnapshot();
-        this._showToast("Données ENGIE actualisées.");
+        this._showToast("Données ENGIE & ZLinky_TIC actualisées.");
       } catch (err) {
         this._showToast(`Erreur refresh: ${err.message || err}`);
       }
@@ -597,6 +767,75 @@ class DomoLinkEngiePanel extends HTMLElement {
       });
     });
 
+    // Settings Tab: ZLinky_TIC Auto-detection & Manual configuration events
+    if (this._activeTab === "settings") {
+      const devSelect = this.shadowRoot.getElementById("zl-device-select");
+      const prefInput = this.shadowRoot.getElementById("zl-prefix-input");
+
+      devSelect?.addEventListener("change", async (e) => {
+        const chosenPrefix = e.target.value;
+        if (prefInput) prefInput.value = chosenPrefix;
+        if (!this._hass) return;
+        try {
+          const res = await this._hass.callWS({
+            type: "domolink_engie/save_zlinky_config",
+            entry_id: acc?.entry_id,
+            reset_auto: false,
+            zlinky_enabled: true,
+            zlinky_device_prefix: chosenPrefix,
+          });
+          this._snapshot = res;
+          this._showToast(`Appareil ZLinky_TIC '${chosenPrefix || "Auto"}' sélectionné.`);
+        } catch (err) {
+          this._showToast(`Erreur sélection ZLinky: ${err.message || err}`);
+        }
+      });
+
+      const triggerAutoReset = async () => {
+        if (!this._hass) return;
+        try {
+          const res = await this._hass.callWS({
+            type: "domolink_engie/save_zlinky_config",
+            entry_id: acc?.entry_id,
+            reset_auto: true,
+            zlinky_enabled: true,
+          });
+          this._snapshot = res;
+          const updatedAcc = this._getCurrentAccount();
+          const count = updatedAcc?.zlinky?.matched_count || 0;
+          this._showToast(`Auto-détection ZLinky_TIC terminée : ${count} capteur(s) associé(s).`);
+        } catch (err) {
+          this._showToast(`Erreur auto-détection: ${err.message || err}`);
+        }
+      };
+
+      this.shadowRoot.getElementById("zlinky-autodetect-btn")?.addEventListener("click", triggerAutoReset);
+      this.shadowRoot.getElementById("zlinky-clear-btn")?.addEventListener("click", triggerAutoReset);
+
+      this.shadowRoot.getElementById("zlinky-save-btn")?.addEventListener("click", async () => {
+        if (!this._hass) return;
+        const enabledEl = this.shadowRoot.getElementById("zl-enabled");
+        const payload = {
+          type: "domolink_engie/save_zlinky_config",
+          entry_id: acc?.entry_id,
+          reset_auto: false,
+          zlinky_enabled: enabledEl ? Boolean(enabledEl.checked) : true,
+          zlinky_device_prefix: prefInput ? prefInput.value.trim() : "",
+        };
+        this.shadowRoot.querySelectorAll(".zslot-input").forEach((inp) => {
+          const k = inp.getAttribute("data-zslot-key");
+          if (k) payload[k] = inp.value.trim();
+        });
+        try {
+          const res = await this._hass.callWS(payload);
+          this._snapshot = res;
+          this._showToast("Configuration ZLinky_TIC enregistrée avec succès !");
+        } catch (err) {
+          this._showToast(`Erreur sauvegarde ZLinky_TIC: ${err.message || err}`);
+        }
+      });
+    }
+
     if (this._activeTab === "generator") {
       const bindGen = (id, key, isBool = false) => {
         const el = this.shadowRoot.getElementById(id);
@@ -611,6 +850,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       bindGen("gen-mode", "mode");
       bindGen("gen-default-tab", "default_tab");
       bindGen("gen-default-period", "default_period");
+      bindGen("gen-zlinky-prefix", "zlinky_device_prefix");
       bindGen("gen-power-sensor", "power_sensor");
       bindGen("gen-daily-sensor", "daily_energy_sensor");
       bindGen("gen-theme", "theme");
@@ -639,6 +879,7 @@ class DomoLinkEngiePanel extends HTMLElement {
             mode: this._cardGen.mode,
             default_tab: this._cardGen.default_tab,
             default_period: this._cardGen.default_period,
+            zlinky_device_prefix: this._cardGen.zlinky_device_prefix,
             power_sensor: this._cardGen.power_sensor,
             daily_energy_sensor: this._cardGen.daily_energy_sensor,
             theme: this._cardGen.theme,
@@ -647,6 +888,7 @@ class DomoLinkEngiePanel extends HTMLElement {
             show_usages: this._cardGen.show_usages,
             show_billing: this._cardGen.show_billing,
           });
+          cardEl._snapshotAcc = acc;
           cardEl.hass = this._hass;
           host.appendChild(cardEl);
         } else {

@@ -23,7 +23,10 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN_EXPIRES_AT,
     CONF_USERNAME,
+    CONF_ZLINKY_DEVICE_PREFIX,
+    CONF_ZLINKY_ENABLED,
     DOMAIN,
+    ZLINKY_SENSOR_KEYS,
 )
 from .engie_api import (
     EngieApiClient,
@@ -33,6 +36,7 @@ from .engie_api import (
     create_engie_aiohttp_session,
     extract_id_personne_from_jwt,
 )
+from .zlinky import detect_and_resolve_zlinky
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -318,7 +322,7 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class EngieOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle DomoLink ENGIE polling interval options."""
+    """Handle DomoLink ENGIE polling interval and ZLinky_TIC real-time options."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
@@ -326,20 +330,35 @@ class EngieOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Manage polling intervals for consumption & billing."""
+        """Manage polling intervals and ZLinky_TIC sensor mapping."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            cleaned = dict(user_input)
+            for k in (CONF_ZLINKY_DEVICE_PREFIX, *ZLINKY_SENSOR_KEYS):
+                if k in cleaned:
+                    cleaned[k] = str(cleaned[k] or "").strip()
+            return self.async_create_entry(title="", data=cleaned)
 
-        current_scan = int(self._config_entry.options.get(CONF_SCAN_INTERVAL, 120))
-        current_billing = int(self._config_entry.options.get(CONF_BILLING_INTERVAL, 6))
-        schema = vol.Schema(
-            {
-                vol.Optional(CONF_SCAN_INTERVAL, default=current_scan): vol.All(
-                    int, vol.Range(min=30, max=360)
-                ),
-                vol.Optional(CONF_BILLING_INTERVAL, default=current_billing): vol.All(
-                    int, vol.Range(min=1, max=24)
-                ),
-            }
-        )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        opts = getattr(self._config_entry, "options", None) or {}
+        current_scan = int(opts.get(CONF_SCAN_INTERVAL, 120))
+        current_billing = int(opts.get(CONF_BILLING_INTERVAL, 6))
+        zlinky_enabled = bool(opts.get(CONF_ZLINKY_ENABLED, True))
+
+        zlinky_info = detect_and_resolve_zlinky(getattr(self, "hass", None), options=opts)
+        resolved = zlinky_info.get("resolved") or {}
+        default_prefix = str(opts.get(CONF_ZLINKY_DEVICE_PREFIX) or zlinky_info.get("device_prefix") or "")
+
+        schema_dict: dict[Any, Any] = {
+            vol.Optional(CONF_SCAN_INTERVAL, default=current_scan): vol.All(
+                int, vol.Range(min=5, max=360)
+            ),
+            vol.Optional(CONF_BILLING_INTERVAL, default=current_billing): vol.All(
+                int, vol.Range(min=1, max=24)
+            ),
+            vol.Optional(CONF_ZLINKY_ENABLED, default=zlinky_enabled): bool,
+            vol.Optional(CONF_ZLINKY_DEVICE_PREFIX, default=default_prefix): str,
+        }
+        for key in ZLINKY_SENSOR_KEYS:
+            default_eid = str(opts.get(key) or resolved.get(key) or "")
+            schema_dict[vol.Optional(key, default=default_eid)] = str
+
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema_dict))

@@ -16,6 +16,8 @@ from .const import (
     CONF_ID_TOKEN,
     CONF_REFRESH_TOKEN,
     CONF_TOKEN_EXPIRES_AT,
+    CONF_ZLINKY_DEVICE_PREFIX,
+    CONF_ZLINKY_ENABLED,
     DOMAIN,
     FRONTEND_URL_PATH,
     PANEL_FILE_NAME,
@@ -26,9 +28,15 @@ from .const import (
     PLATFORMS,
     SERVICE_IMPORT_HISTORY,
     VERSION,
+    ZLINKY_SENSOR_KEYS,
 )
 from .coordinator import EngieDataUpdateCoordinator
-from .engie_api import EngieApiClient, create_engie_aiohttp_session
+from .engie_api import (
+    EngieApiClient,
+    async_create_engie_aiohttp_session,
+    create_engie_aiohttp_session,
+)
+from .zlinky import detect_and_resolve_zlinky
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +64,20 @@ def _build_account_snapshot(
     except Exception:
         pass
 
+    entry_options: dict[str, Any] = {}
+    try:
+        raw_opts = getattr(getattr(coord, "entry", None), "options", None)
+        if isinstance(raw_opts, dict):
+            entry_options = dict(raw_opts)
+    except Exception:
+        pass
+
+    zlinky_info = detect_and_resolve_zlinky(
+        hass,
+        options=entry_options,
+        elec_releve=data.get("elec_releve") or {},
+    )
+
     billing = data.get("billing") or {}
     return {
         "entry_id": entry_id,
@@ -77,6 +99,9 @@ def _build_account_snapshot(
         "elec_monthly": data.get("elec_monthly") or [],
         "gaz_monthly": data.get("gaz_monthly") or [],
         "elec_hourly": data.get("elec_hourly") or [],
+        "est_elec": data.get("est_elec") or {},
+        "est_gaz": data.get("est_gaz") or {},
+        "hphc_jour": data.get("hphc_jour") or {},
         "billing": {
             "solde": billing.get("solde") or {},
             "plan_mens": billing.get("plan_mens") or {},
@@ -88,6 +113,8 @@ def _build_account_snapshot(
             "cheque_energie": billing.get("cheque_energie") or {},
         },
         "erl": data.get("erl") or {},
+        "zlinky": zlinky_info,
+        "options": entry_options,
         "last_sync_utc": data.get("last_sync_utc") or "",
         "entities": entities_map,
     }
@@ -216,14 +243,59 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
             total_points += await coord.async_import_full_history(months=months)
         connection.send_result(msg["id"], {"imported_points": total_points, "months": months})
 
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): f"{DOMAIN}/save_zlinky_config",
+            vol.Optional("entry_id"): str,
+            vol.Optional("reset_auto", default=False): bool,
+            vol.Optional(CONF_ZLINKY_ENABLED, default=True): bool,
+            vol.Optional(CONF_ZLINKY_DEVICE_PREFIX, default=""): str,
+            **{vol.Optional(k, default=""): str for k in ZLINKY_SENSOR_KEYS},
+        }
+    )
+    @websocket_api.async_response
+    async def ws_save_zlinky_config(
+        hass: HomeAssistant,
+        connection: websocket_api.ActiveConnection,
+        msg: dict[str, Any],
+    ) -> None:
+        reset_auto = bool(msg.get("reset_auto", False))
+        for _, coord in _iter_coordinators(msg.get("entry_id")):
+            new_opts = dict(getattr(coord.entry, "options", None) or {})
+            new_opts[CONF_ZLINKY_ENABLED] = bool(msg.get(CONF_ZLINKY_ENABLED, True))
+            new_opts[CONF_ZLINKY_DEVICE_PREFIX] = "" if reset_auto else str(msg.get(CONF_ZLINKY_DEVICE_PREFIX, "")).strip()
+            for k in ZLINKY_SENSOR_KEYS:
+                if reset_auto:
+                    new_opts.pop(k, None)
+                elif k in msg:
+                    val = str(msg.get(k) or "").strip()
+                    if val:
+                        new_opts[k] = val
+                    else:
+                        new_opts.pop(k, None)
+            hass.config_entries.async_update_entry(coord.entry, options=new_opts)
+
+        accounts = [
+            _build_account_snapshot(hass, eid, coord)
+            for eid, coord in _iter_coordinators()
+        ]
+        connection.send_result(msg["id"], {"version": VERSION, "accounts": accounts})
+
     websocket_api.async_register_command(hass, ws_get_snapshot)
     websocket_api.async_register_command(hass, ws_refresh_now)
     websocket_api.async_register_command(hass, ws_import_history)
+    websocket_api.async_register_command(hass, ws_save_zlinky_config)
     hass.data[f"{DOMAIN}_ws_registered"] = True
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry when options are updated."""
+    """Apply updated options in-place on the coordinator without dropping state."""
+    coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if isinstance(coord, EngieDataUpdateCoordinator):
+        coord.entry = entry
+        coord.apply_options()
+        coord.async_update_listeners()
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
@@ -231,7 +303,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up DomoLink ENGIE from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    session = create_engie_aiohttp_session()
+    session = await async_create_engie_aiohttp_session(hass)
     client = EngieApiClient(
         session=session,
         access_token=entry.data.get(CONF_ACCESS_TOKEN),

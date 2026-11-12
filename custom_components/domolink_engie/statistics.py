@@ -66,6 +66,7 @@ def build_cumulative_series(
     records: list[dict[str, Any]],
     value_key: str,
     date_keys: tuple[str, ...] = ("valeurDate", "dateDebut", "date", "datetime"),
+    initial_sum: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Convert ENGIE period records into deduplicated monotonic cumulative points."""
     dated_values: dict[datetime, float] = {}
@@ -89,7 +90,7 @@ def build_cumulative_series(
         # Accumulate if multiple sub-records share the same top-of-hour slot
         dated_values[dt_utc] = dated_values.get(dt_utc, 0.0) + raw_val
 
-    running_sum = 0.0
+    running_sum = float(initial_sum or 0.0)
     series: list[dict[str, Any]] = []
     for dt_utc in sorted(dated_values.keys()):
         val = round(dated_values[dt_utc], 4)
@@ -102,6 +103,50 @@ def build_cumulative_series(
             }
         )
     return series
+
+
+async def _async_get_prior_sum(
+    hass: HomeAssistant,
+    stat_id: str,
+    first_start: datetime,
+) -> float:
+    """Query HA Recorder for the last cumulative sum strictly prior to first_start."""
+    try:
+        from datetime import timedelta
+        from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.statistics import statistics_during_period
+
+        instance = get_instance(hass)
+        if instance is None:
+            return 0.0
+
+        lookback_start = first_start - timedelta(days=90)
+        stats_map = await instance.async_add_executor_job(
+            statistics_during_period,
+            hass,
+            lookback_start,
+            first_start,
+            {stat_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+        rows = (stats_map or {}).get(stat_id) or []
+        prior_rows = [
+            r
+            for r in rows
+            if isinstance(r, dict)
+            and r.get("sum") is not None
+            and (
+                (isinstance(r.get("start"), (int, float)) and float(r["start"]) < first_start.timestamp())
+                or (isinstance(r.get("start"), datetime) and r["start"] < first_start)
+            )
+        ]
+        if prior_rows:
+            return float(prior_rows[-1]["sum"] or 0.0)
+    except Exception:
+        return 0.0
+    return 0.0
 
 
 async def async_import_engie_statistics(
@@ -162,6 +207,9 @@ async def async_import_engie_statistics(
         series = build_cumulative_series(records, key)
         if not series:
             continue
+        prior_sum = await _async_get_prior_sum(hass, stat_id, series[0]["start"])
+        if prior_sum > 0:
+            series = build_cumulative_series(records, key, initial_sum=prior_sum)
 
         meta_kwargs: dict[str, Any] = {
             "has_sum": True,
