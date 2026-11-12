@@ -181,6 +181,10 @@ def _extract_elec_monthly_kwh(data: dict[str, Any]) -> float | None:
     daily = _sum_current_month(data.get("elec_daily") or [], "conso")
     if daily is not None:
         return daily
+    monthly_rec = _latest_record(data.get("elec_monthly") or [])
+    monthly_val = safe_float(monthly_rec.get("conso"))
+    if monthly_val is not None:
+        return monthly_val
     return safe_float((data.get("elec_variation") or {}).get("month_kwh"))
 
 
@@ -188,6 +192,10 @@ def _extract_elec_monthly_cost(data: dict[str, Any]) -> float | None:
     daily = _sum_current_month(data.get("elec_daily") or [], "consoEuro")
     if daily is not None:
         return daily
+    monthly_rec = _latest_record(data.get("elec_monthly") or [])
+    monthly_val = safe_float(monthly_rec.get("consoEuro"))
+    if monthly_val is not None:
+        return monthly_val
     return safe_float((data.get("elec_variation") or {}).get("month_euro"))
 
 
@@ -195,6 +203,10 @@ def _extract_gaz_monthly_kwh(data: dict[str, Any]) -> float | None:
     daily = _sum_current_month(data.get("gaz_daily") or [], "conso")
     if daily is not None:
         return daily
+    monthly_rec = _latest_record(data.get("gaz_monthly") or [])
+    monthly_val = safe_float(monthly_rec.get("conso"))
+    if monthly_val is not None:
+        return monthly_val
     return safe_float((data.get("gaz_variation") or {}).get("month_kwh"))
 
 
@@ -202,7 +214,164 @@ def _extract_gaz_monthly_cost(data: dict[str, Any]) -> float | None:
     daily = _sum_current_month(data.get("gaz_daily") or [], "consoEuro")
     if daily is not None:
         return daily
+    monthly_rec = _latest_record(data.get("gaz_monthly") or [])
+    monthly_val = safe_float(monthly_rec.get("consoEuro"))
+    if monthly_val is not None:
+        return monthly_val
     return safe_float((data.get("gaz_variation") or {}).get("month_euro"))
+
+
+def _extract_hphc_latest(data: dict[str, Any]) -> dict[str, Any]:
+    """Extract latest daily HP/HC breakdown from getRepartitionHeuresCreusesJour or elec_daily."""
+    hphc = data.get("hphc_jour") or {}
+    candidates = (
+        hphc.get("historiquesElec")
+        or hphc.get("repartitionHeuresCreuses")
+        or hphc.get("listeConsos")
+        or data.get("elec_daily")
+        or []
+    )
+    for rec in reversed(candidates if isinstance(candidates, list) else []):
+        if not isinstance(rec, dict):
+            continue
+        hp = safe_float(
+            rec.get("consoHP")
+            if rec.get("consoHP") is not None
+            else (rec.get("heuresPleines") if rec.get("heuresPleines") is not None else rec.get("hp"))
+        )
+        hc = safe_float(
+            rec.get("consoHC")
+            if rec.get("consoHC") is not None
+            else (rec.get("heuresCreuses") if rec.get("heuresCreuses") is not None else rec.get("hc"))
+        )
+        if hp is not None or hc is not None:
+            hp_v = hp or 0.0
+            hc_v = hc or 0.0
+            tot = hp_v + hc_v
+            ratio = round((hc_v / tot) * 100.0, 1) if tot > 0 else None
+            return {
+                "hp_kwh": round(hp_v, 2) if hp is not None else None,
+                "hc_kwh": round(hc_v, 2) if hc is not None else None,
+                "hc_ratio_pct": ratio,
+                "date": rec.get("valeurDate") or rec.get("dateDebut") or rec.get("date"),
+            }
+
+    # Check top-level summary fields in hphc_jour if present
+    hp_top = safe_float(hphc.get("consoHP") or hphc.get("heuresPleines"))
+    hc_top = safe_float(hphc.get("consoHC") or hphc.get("heuresCreuses"))
+    pct_top = safe_float(hphc.get("tauxHeuresCreuses") or hphc.get("pourcentageHC"))
+    if hp_top is not None or hc_top is not None or pct_top is not None:
+        tot = (hp_top or 0.0) + (hc_top or 0.0)
+        ratio = pct_top if pct_top is not None else (round(((hc_top or 0.0) / tot) * 100.0, 1) if tot > 0 else None)
+        return {
+            "hp_kwh": round(hp_top, 2) if hp_top is not None else None,
+            "hc_kwh": round(hc_top, 2) if hc_top is not None else None,
+            "hc_ratio_pct": ratio,
+            "date": hphc.get("date"),
+        }
+    return {}
+
+
+def _extract_elec_cadran_price(data: dict[str, Any], target: str) -> float | None:
+    """Extract HP or HC specific kWh tariff from est_elec.cadrans."""
+    cadrans = (data.get("est_elec") or {}).get("cadrans") or []
+    if not isinstance(cadrans, list) or not cadrans:
+        return None
+    target_up = target.upper()
+    for cad in cadrans:
+        if not isinstance(cad, dict):
+            continue
+        lbl = str(cad.get("code") or cad.get("libelle") or cad.get("typeCadran") or "").upper()
+        px = safe_float(cad.get("prixKwh"))
+        if px is None or px <= 0:
+            continue
+        if target_up == "HP" and ("HP" in lbl or "PLEINE" in lbl):
+            return round(px, 5)
+        if target_up == "HC" and ("HC" in lbl or "CREUSE" in lbl):
+            return round(px, 5)
+    return None
+
+
+def _extract_ext_temperature(data: dict[str, Any]) -> float | None:
+    """Extract latest external average temperature from daily or monthly records."""
+    for key in ("elec_daily", "gaz_daily", "elec_monthly", "gaz_monthly"):
+        for rec in reversed(data.get(key) or []):
+            if isinstance(rec, dict):
+                temp = safe_float(rec.get("temperature") or rec.get("temperatureExt"))
+                if temp is not None:
+                    return round(temp, 1)
+    return None
+
+
+def _extract_regularisation_estimee(data: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+    """Estimate annual regularization delta (paid installments minus estimated real consumption cost)."""
+    pm = ((data.get("billing") or {}).get("plan_mens") or {}).get("listPlanMensCourant") or []
+    if not isinstance(pm, list) or not pm:
+        return None, {}
+
+    paid_items = [
+        it
+        for it in pm
+        if isinstance(it, dict)
+        and not str(it.get("etatPaiement") or "").lower().startswith("a régler")
+        and safe_float(it.get("montantMensualite")) is not None
+    ]
+    pending_items = [
+        it
+        for it in pm
+        if isinstance(it, dict)
+        and str(it.get("etatPaiement") or "").lower().startswith("a régler")
+        and safe_float(it.get("montantMensualite")) is not None
+    ]
+
+    total_paid = round(sum(safe_float(it.get("montantMensualite")) or 0.0 for it in paid_items), 2)
+    current_mens = safe_float(_extract_plan_mens_info(data)[0].get("montantMensualite")) or 0.0
+    elec_cost_m = _extract_elec_monthly_cost(data) or 0.0
+    gaz_cost_m = _extract_gaz_monthly_cost(data) or 0.0
+    real_monthly_burn = round(elec_cost_m + gaz_cost_m, 2)
+
+    if real_monthly_burn <= 0 or current_mens <= 0:
+        return None, {}
+
+    months_elapsed = max(1, len(paid_items))
+    est_consumed = round(real_monthly_burn * months_elapsed, 2)
+    base_paid = total_paid if total_paid > 0 else round(current_mens * months_elapsed, 2)
+    ecart = round(base_paid - est_consumed, 2)
+
+    if ecart > 5.0:
+        statut = "Trop-perçu (remboursement estimé)"
+    elif ecart < -5.0:
+        statut = "Reste à payer estimé"
+    else:
+        statut = "Équilibré"
+
+    return ecart, {
+        "statut_regularisation": statut,
+        "mensualites_cumulees_eur": base_paid,
+        "conso_valorisee_cumulee_eur": est_consumed,
+        "mensualite_actuelle_eur": current_mens,
+        "cout_mensuel_reel_eur": real_monthly_burn,
+        "echeances_reglees": len(paid_items),
+        "echeances_restantes": len(pending_items),
+    }
+
+
+def _extract_erl_avg_power(data: dict[str, Any]) -> float | None:
+    """Extract live average power (VA) from ERL gateway response."""
+    avg_p = ((data.get("erl") or {}).get("avg_power") or {})
+    if not isinstance(avg_p, dict):
+        return None
+    for k in ("avgPower", "power", "value", "apparentPower"):
+        val = safe_float(avg_p.get(k))
+        if val is not None:
+            return val
+    pts = avg_p.get("values") or avg_p.get("metrics") or avg_p.get("data") or []
+    if isinstance(pts, list) and pts:
+        last = pts[-1]
+        if isinstance(last, dict):
+            return safe_float(last.get("value") or last.get("power") or last.get("avgPower"))
+        return safe_float(last)
+    return None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -350,6 +519,82 @@ SENSOR_DESCRIPTIONS: tuple[EngieSensorDescription, ...] = (
         icon="mdi:tag-outline",
         condition_fn=lambda d: _extract_elec_kwh_price(d) is not None,
         value_fn=_extract_elec_kwh_price,
+    ),
+    EngieSensorDescription(
+        key="elec_price_hp",
+        name="Tarif Électricité Heures Pleines",
+        device_group="elec",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="EUR/kWh",
+        suggested_display_precision=4,
+        icon="mdi:tag-plus-outline",
+        condition_fn=lambda d: _extract_elec_cadran_price(d, "HP") is not None,
+        value_fn=lambda d: _extract_elec_cadran_price(d, "HP"),
+    ),
+    EngieSensorDescription(
+        key="elec_price_hc",
+        name="Tarif Électricité Heures Creuses",
+        device_group="elec",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="EUR/kWh",
+        suggested_display_precision=4,
+        icon="mdi:tag-minus-outline",
+        condition_fn=lambda d: _extract_elec_cadran_price(d, "HC") is not None,
+        value_fn=lambda d: _extract_elec_cadran_price(d, "HC"),
+    ),
+    EngieSensorDescription(
+        key="elec_daily_hp",
+        name="Consommation Électricité Veille HP",
+        device_group="elec",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        icon="mdi:white-balance-sunny",
+        condition_fn=lambda d: _extract_hphc_latest(d).get("hp_kwh") is not None,
+        value_fn=lambda d: _extract_hphc_latest(d).get("hp_kwh"),
+        attrs_fn=lambda d: {"date": _extract_hphc_latest(d).get("date")},
+    ),
+    EngieSensorDescription(
+        key="elec_daily_hc",
+        name="Consommation Électricité Veille HC",
+        device_group="elec",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        icon="mdi:weather-night",
+        condition_fn=lambda d: _extract_hphc_latest(d).get("hc_kwh") is not None,
+        value_fn=lambda d: _extract_hphc_latest(d).get("hc_kwh"),
+        attrs_fn=lambda d: {"date": _extract_hphc_latest(d).get("date")},
+    ),
+    EngieSensorDescription(
+        key="elec_hc_ratio",
+        name="Ratio Heures Creuses Électricité",
+        device_group="elec",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=1,
+        icon="mdi:percent-circle-outline",
+        condition_fn=lambda d: _extract_hphc_latest(d).get("hc_ratio_pct") is not None,
+        value_fn=lambda d: _extract_hphc_latest(d).get("hc_ratio_pct"),
+        attrs_fn=lambda d: {
+            "hp_kwh": _extract_hphc_latest(d).get("hp_kwh"),
+            "hc_kwh": _extract_hphc_latest(d).get("hc_kwh"),
+            "date": _extract_hphc_latest(d).get("date"),
+        },
+    ),
+    EngieSensorDescription(
+        key="ext_temperature",
+        name="Température Extérieure Moyenne",
+        device_group="account",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="°C",
+        suggested_display_precision=1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:thermometer",
+        condition_fn=lambda d: _extract_ext_temperature(d) is not None,
+        value_fn=_extract_ext_temperature,
     ),
     EngieSensorDescription(
         key="elec_carbon_month",
@@ -717,7 +962,31 @@ SENSOR_DESCRIPTIONS: tuple[EngieSensorDescription, ...] = (
             "date_paiement": ((d.get("billing") or {}).get("cheque_energie") or {}).get("datePaiement"),
         },
     ),
+    EngieSensorDescription(
+        key="account_regularisation_estimee",
+        name="Estimation Régularisation Annuelle",
+        device_group="account",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="EUR",
+        suggested_display_precision=2,
+        icon="mdi:scale-balance",
+        condition_fn=lambda d: _extract_regularisation_estimee(d)[0] is not None,
+        value_fn=lambda d: _extract_regularisation_estimee(d)[0],
+        attrs_fn=lambda d: _extract_regularisation_estimee(d)[1],
+    ),
     # --- ERL LIVE TELEMETRY (if active) ---
+    EngieSensorDescription(
+        key="erl_avg_power",
+        name="Puissance Instantanée (ERL)",
+        device_group="erl",
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        icon="mdi:flash-alert",
+        condition_fn=lambda d: bool((d.get("summary") or {}).get("client_erl"))
+        and _extract_erl_avg_power(d) is not None,
+        value_fn=_extract_erl_avg_power,
+    ),
     EngieSensorDescription(
         key="erl_max_power_day",
         name="Puissance Max Jour (ERL)",
@@ -763,6 +1032,7 @@ class EngieSensor(CoordinatorEntity[EngieDataUpdateCoordinator], SensorEntity):
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
+        self._attr_translation_key = description.key
         cc = coordinator.compte_contrat
         self._attr_unique_id = f"engie_{cc}_{description.key}"
 

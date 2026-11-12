@@ -57,11 +57,24 @@
   "options": {
     "step": {
       "init": {
-        "title": "Options DomoLink ENGIE",
-        "description": "Configurez les intervalles de synchronisation avec les serveurs ENGIE.",
+        "title": "Options DomoLink ENGIE & ZLinky_TIC Temps Réel",
+        "description": "Configurez les intervalles de synchronisation ENGIE et l'association automatique ou manuelle de votre clé Zigbee ZLinky_TIC (Z2M, ZHA, deCONZ/Dresden, TIC).",
         "data": {
           "scan_interval": "Intervalle de mise à jour consommation & relevés (minutes)",
-          "billing_interval": "Intervalle de mise à jour facturation & mensualités (heures)"
+          "billing_interval": "Intervalle de mise à jour facturation & mensualités (heures)",
+          "zlinky_enabled": "Activer l'intégration temps réel ZLinky_TIC / Téléinfo",
+          "zlinky_device_prefix": "Préfixe / Nom de l'appareil ZLinky_TIC (ex: zlinky_tic)",
+          "zlinky_power_sensor": "Capteur Puissance apparente (SINSTS / PAPP — VA/W)",
+          "zlinky_current_sensor": "Capteur Intensité efficace (IRMS1 / IINST — A)",
+          "zlinky_voltage_sensor": "Capteur Tension efficace (URMS1 — V)",
+          "zlinky_index_total_sensor": "Capteur Index Total (EAST / BASE — kWh/Wh)",
+          "zlinky_index_hc_sensor": "Capteur Index Heures Creuses (EASF01 / HCHC — kWh/Wh)",
+          "zlinky_index_hp_sensor": "Capteur Index Heures Pleines (EASF02 / HCHP — kWh/Wh)",
+          "zlinky_ptec_sensor": "Capteur Période tarifaire en cours (PTEC / LTARF)",
+          "zlinky_max_power_sensor": "Capteur Puissance max du jour (SMAXSN / PMAX — VA)",
+          "zlinky_pref_sensor": "Capteur Puissance souscrite (PREF / ISOUSC — kVA/A)",
+          "zlinky_daily_energy_sensor": "Capteur Énergie quotidienne (Optionnel — kWh/Wh)",
+          "zlinky_demain_sensor": "Capteur Couleur Tempo Demain (DEMAIN — Optionnel)"
         }
       }
     }

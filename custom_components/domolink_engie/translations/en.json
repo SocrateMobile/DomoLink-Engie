@@ -57,11 +57,24 @@
   "options": {
     "step": {
       "init": {
-        "title": "DomoLink ENGIE Options",
-        "description": "Configure polling intervals for ENGIE servers.",
+        "title": "DomoLink ENGIE & ZLinky_TIC Real-Time Options",
+        "description": "Configure polling intervals for ENGIE servers and auto/manual mapping for your ZLinky_TIC Zigbee adapter (Z2M, ZHA, deCONZ/Dresden, TIC).",
         "data": {
           "scan_interval": "Consumption & meter update interval (minutes)",
-          "billing_interval": "Billing & installment update interval (hours)"
+          "billing_interval": "Billing & installment update interval (hours)",
+          "zlinky_enabled": "Enable ZLinky_TIC / Teleinfo real-time integration",
+          "zlinky_device_prefix": "ZLinky_TIC Device Prefix / Name (e.g., zlinky_tic)",
+          "zlinky_power_sensor": "Apparent Power Sensor (SINSTS / PAPP — VA/W)",
+          "zlinky_current_sensor": "RMS Current Sensor (IRMS1 / IINST — A)",
+          "zlinky_voltage_sensor": "RMS Voltage Sensor (URMS1 — V)",
+          "zlinky_index_total_sensor": "Total Energy Index Sensor (EAST / BASE — kWh/Wh)",
+          "zlinky_index_hc_sensor": "Off-Peak Index Sensor (EASF01 / HCHC — kWh/Wh)",
+          "zlinky_index_hp_sensor": "Peak Index Sensor (EASF02 / HCHP — kWh/Wh)",
+          "zlinky_ptec_sensor": "Active Tariff Period Sensor (PTEC / LTARF)",
+          "zlinky_max_power_sensor": "Daily Max Power Sensor (SMAXSN / PMAX — VA)",
+          "zlinky_pref_sensor": "Subscribed Power Sensor (PREF / ISOUSC — kVA/A)",
+          "zlinky_daily_energy_sensor": "Daily Energy Sensor (Optional — kWh/Wh)",
+          "zlinky_demain_sensor": "Tomorrow Tempo Color Sensor (DEMAIN — Optional)"
         }
       }
     }

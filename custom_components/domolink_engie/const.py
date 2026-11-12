@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DOMAIN = "domolink_engie"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 PLATFORMS: list[str] = ["sensor", "binary_sensor"]
 
 # Frontend Panel & Lovelace Card
@@ -27,6 +27,35 @@ CONF_ID_PERSONNE = "id_personne"
 CONF_IMPORT_HISTORY = "import_history"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_BILLING_INTERVAL = "billing_interval"
+
+# ZLinky_TIC (Zigbee2MQTT / ZHA / deCONZ / TIC) Configuration Keys
+CONF_ZLINKY_ENABLED = "zlinky_enabled"
+CONF_ZLINKY_DEVICE_PREFIX = "zlinky_device_prefix"
+CONF_ZLINKY_POWER_SENSOR = "zlinky_power_sensor"
+CONF_ZLINKY_CURRENT_SENSOR = "zlinky_current_sensor"
+CONF_ZLINKY_VOLTAGE_SENSOR = "zlinky_voltage_sensor"
+CONF_ZLINKY_INDEX_TOTAL_SENSOR = "zlinky_index_total_sensor"
+CONF_ZLINKY_INDEX_HC_SENSOR = "zlinky_index_hc_sensor"
+CONF_ZLINKY_INDEX_HP_SENSOR = "zlinky_index_hp_sensor"
+CONF_ZLINKY_PTEC_SENSOR = "zlinky_ptec_sensor"
+CONF_ZLINKY_MAX_POWER_SENSOR = "zlinky_max_power_sensor"
+CONF_ZLINKY_PREF_SENSOR = "zlinky_pref_sensor"
+CONF_ZLINKY_DAILY_ENERGY_SENSOR = "zlinky_daily_energy_sensor"
+CONF_ZLINKY_DEMAIN_SENSOR = "zlinky_demain_sensor"
+
+ZLINKY_SENSOR_KEYS: tuple[str, ...] = (
+    CONF_ZLINKY_POWER_SENSOR,
+    CONF_ZLINKY_CURRENT_SENSOR,
+    CONF_ZLINKY_VOLTAGE_SENSOR,
+    CONF_ZLINKY_INDEX_TOTAL_SENSOR,
+    CONF_ZLINKY_INDEX_HC_SENSOR,
+    CONF_ZLINKY_INDEX_HP_SENSOR,
+    CONF_ZLINKY_PTEC_SENSOR,
+    CONF_ZLINKY_MAX_POWER_SENSOR,
+    CONF_ZLINKY_PREF_SENSOR,
+    CONF_ZLINKY_DAILY_ENERGY_SENSOR,
+    CONF_ZLINKY_DEMAIN_SENSOR,
+)
 
 # Default Polling Intervals
 DEFAULT_SCAN_INTERVAL_SECONDS = 7200  # 2 hours for consumption & meter data

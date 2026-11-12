@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for DomoLink ENGIE Électricité & Gaz."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 import time
@@ -26,6 +27,7 @@ from .const import (
     CONF_TOKEN_EXPIRES_AT,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
+    ERL_REFRESH_SECONDS,
     PAS_TEMPS_JOUR,
 )
 from .engie_api import (
@@ -36,9 +38,64 @@ from .engie_api import (
     extract_id_personne_from_jwt,
     safe_float,
 )
-from .statistics import async_import_engie_statistics
+from .statistics import async_import_engie_statistics, parse_engie_datetime_utc
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _format_short_day_label(raw_dt: str) -> str:
+    """Convert YYYY-MM-DD or DD/MM/YYYY into DD/MM for chart labels."""
+    s = str(raw_dt or "").strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return f"{s[8:10]}/{s[5:7]}"
+    if len(s) >= 5 and s[2] == "/":
+        return s[:5]
+    return s[:5]
+
+
+def _enrich_period_records(records: list[dict[str, Any]], is_daily: bool = True) -> list[dict[str, Any]]:
+    """Enrich ENGIE consumption records with normalized chart keys while preserving raw fields."""
+    enriched: list[dict[str, Any]] = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        raw_dt = str(rec.get("valeurDate") or rec.get("dateDebut") or rec.get("date") or "")
+        kwh = safe_float(rec.get("conso") if rec.get("conso") is not None else rec.get("kwh"))
+        prev = safe_float(rec.get("consoN1") or rec.get("consoAnneePrecedente") or rec.get("prev"))
+        item = dict(rec)
+        if raw_dt and "date" not in item:
+            item["date"] = raw_dt
+        if is_daily and raw_dt and "label" not in item:
+            item["label"] = _format_short_day_label(raw_dt)
+        if kwh is not None:
+            item.setdefault("kwh", kwh)
+            item.setdefault("curr", kwh)
+        if prev is not None:
+            item.setdefault("prev", prev)
+        enriched.append(item)
+    return enriched
+
+
+def _enrich_hourly_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize hourly load curve records with hour (0..23), kwh, and euro fields."""
+    enriched: list[dict[str, Any]] = []
+    for idx, rec in enumerate(records or []):
+        if not isinstance(rec, dict):
+            continue
+        raw_dt = str(rec.get("valeurDate") or rec.get("dateDebut") or rec.get("date") or "")
+        dt_utc = parse_engie_datetime_utc(raw_dt) if raw_dt else None
+        hour = dt_utc.hour if dt_utc is not None else (rec.get("hour") if isinstance(rec.get("hour"), int) else idx % 24)
+        kwh = safe_float(rec.get("conso") if rec.get("conso") is not None else rec.get("kwh"))
+        euro = safe_float(rec.get("consoEuro") if rec.get("consoEuro") is not None else rec.get("euro"))
+        item = dict(rec)
+        item.setdefault("hour", hour)
+        if kwh is not None:
+            item.setdefault("kwh", kwh)
+            item.setdefault("value", kwh)
+        if euro is not None:
+            item.setdefault("euro", euro)
+        enriched.append(item)
+    return enriched
 
 
 def _parse_pct(val: Any) -> float | None:
@@ -176,8 +233,28 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{self.compte_contrat}",
-            update_interval=timedelta(minutes=max(30, scan_mins)),
+            update_interval=timedelta(minutes=max(5, scan_mins)),
         )
+
+    def apply_options(self) -> None:
+        """Apply updated scan_interval and billing_interval options in-place."""
+        options = getattr(self.entry, "options", None) or {}
+        scan_mins = int(options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_SECONDS // 60))
+        self._billing_refresh_seconds = int(
+            options.get(CONF_BILLING_INTERVAL, BILLING_REFRESH_SECONDS // 3600)
+        ) * 3600
+        self.update_interval = timedelta(minutes=max(5, scan_mins))
+
+    async def _async_safe_call(self, label: str, coro: Any) -> dict[str, Any]:
+        """Execute an optional ENGIE endpoint call, propagating auth errors and logging API restrictions."""
+        try:
+            res = await coro
+            return res if isinstance(res, dict) else {}
+        except EngieAuthError:
+            raise
+        except EngieApiError as err:
+            _LOGGER.debug("%s notice: %s", label, err)
+            return {}
 
     async def async_persist_tokens(self, tokens: dict[str, Any]) -> None:
         """Persist refreshed OAuth tokens into ConfigEntry storage."""
@@ -226,173 +303,163 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             now_dt = datetime.now(timezone.utc)
             end_ms = int(now_dt.timestamp() * 1000)
             start_45d_ms = int((now_dt - timedelta(days=45)).timestamp() * 1000)
+            start_7d_ms = int((now_dt - timedelta(days=7)).timestamp() * 1000)
+            start_2d_ms = int((now_dt - timedelta(days=2)).timestamp() * 1000)
             start_year_ms = int(now_dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
-            # 2. Fetch Daily Consumption (non-fatal if maConso ACL restricted) & Consumption Variation
-            ma_conso_jour: dict[str, Any] = {}
-            try:
-                ma_conso_jour = await self.client.async_get_ma_conso(
-                    self.ref_bp,
-                    self.compte_contrat,
-                    self.code_postal,
-                    user_type,
-                    start_45d_ms,
-                    end_ms,
-                    pas_temps=PAS_TEMPS_JOUR,
-                )
-            except EngieApiError as err:
-                _LOGGER.debug("courbe/maConso notice (fallback getConsumptionVariation active): %s", err)
-
-            histo_elec_mois: dict[str, Any] = {}
-            histo_gaz_mois: dict[str, Any] = {}
-            est_elec: dict[str, Any] = {}
-            est_gaz: dict[str, Any] = {}
-            hphc_jour: dict[str, Any] = {}
-            carbone: dict[str, Any] = {}
-            elec_variation_raw: dict[str, Any] = {}
-            gaz_variation_raw: dict[str, Any] = {}
+            # 2. Fetch Consumption, Variations, Tariffs & Hourly curves concurrently
+            conso_tasks: dict[str, Any] = {
+                "ma_conso_jour": self._async_safe_call(
+                    "courbe/maConso",
+                    self.client.async_get_ma_conso(
+                        self.ref_bp,
+                        self.compte_contrat,
+                        self.code_postal,
+                        user_type,
+                        start_45d_ms,
+                        end_ms,
+                        pas_temps=PAS_TEMPS_JOUR,
+                    ),
+                ),
+            }
 
             if has_elec:
-                try:
-                    elec_variation_raw = await self.client.async_get_consumption_variation(
+                conso_tasks["elec_variation_raw"] = self._async_safe_call(
+                    "getConsumptionVariation ELEC",
+                    self.client.async_get_consumption_variation(
                         self.ref_bp, self.compte_contrat, self.code_postal, "ELEC", elec_comm, gaz_comm
-                    )
-                except EngieApiError as err:
-                    _LOGGER.debug("getConsumptionVariation ELEC notice: %s", err)
-                try:
-                    histo_elec_mois = await self.client.async_get_histo_elec_mois(
+                    ),
+                )
+                conso_tasks["histo_elec_mois"] = self._async_safe_call(
+                    "histoElecMois",
+                    self.client.async_get_histo_elec_mois(
                         self.ref_bp, self.compte_contrat, self.code_postal, start_year_ms, end_ms, elec_comm
-                    )
-                except EngieApiError as err:
-                    _LOGGER.debug("histoElecMois notice: %s", err)
-                try:
-                    est_elec = await self.client.async_get_estimation_elec(self.ref_bp, self.compte_contrat)
-                except EngieApiError as err:
-                    _LOGGER.debug("estimationElec notice: %s", err)
-                try:
-                    start_7d_ms = int((now_dt - timedelta(days=7)).timestamp() * 1000)
-                    hphc_jour = await self.client.async_get_repartition_hphc_jour(
+                    ),
+                )
+                conso_tasks["est_elec"] = self._async_safe_call(
+                    "estimationElec",
+                    self.client.async_get_estimation_elec(self.ref_bp, self.compte_contrat),
+                )
+                conso_tasks["hphc_jour"] = self._async_safe_call(
+                    "repartitionHeuresCreusesJour",
+                    self.client.async_get_repartition_hphc_jour(
                         self.ref_bp, self.compte_contrat, start_7d_ms, end_ms
-                    )
-                except EngieApiError:
-                    pass
+                    ),
+                )
+                conso_tasks["histo_elec_heures"] = self._async_safe_call(
+                    "histoElecHeures",
+                    self.client.async_get_histo_elec_heures(
+                        self.ref_bp, self.compte_contrat, start_2d_ms, end_ms
+                    ),
+                )
                 pdl = str(elec_rel.get("idPDL") or "")
                 if pdl and self.id_personne:
-                    try:
-                        carbone = await self.client.async_get_histo_carbone(
+                    conso_tasks["carbone"] = self._async_safe_call(
+                        "histoCarboneElec",
+                        self.client.async_get_histo_carbone(
                             self.ref_bp,
                             self.compte_contrat,
                             self.id_personne,
                             pdl,
                             now_dt.replace(day=1).strftime("%Y-%m-%d"),
-                        )
-                    except EngieApiError:
-                        pass
+                        ),
+                    )
 
             if has_gaz:
-                try:
-                    gaz_variation_raw = await self.client.async_get_consumption_variation(
+                conso_tasks["gaz_variation_raw"] = self._async_safe_call(
+                    "getConsumptionVariation GAZ",
+                    self.client.async_get_consumption_variation(
                         self.ref_bp, self.compte_contrat, self.code_postal, "GAZ", elec_comm, gaz_comm
-                    )
-                except EngieApiError as err:
-                    _LOGGER.debug("getConsumptionVariation GAZ notice: %s", err)
-                try:
-                    histo_gaz_mois = await self.client.async_get_histo_gaz_mois(
+                    ),
+                )
+                conso_tasks["histo_gaz_mois"] = self._async_safe_call(
+                    "histoGazMois",
+                    self.client.async_get_histo_gaz_mois(
                         self.ref_bp, self.compte_contrat, self.code_postal, start_year_ms, end_ms, gaz_comm
-                    )
-                except EngieApiError as err:
-                    _LOGGER.debug("histoGazMois notice: %s", err)
-                try:
-                    est_gaz = await self.client.async_get_estimation_gaz(self.ref_bp, self.compte_contrat)
-                except EngieApiError as err:
-                    _LOGGER.debug("estimationGaz notice: %s", err)
+                    ),
+                )
+                conso_tasks["est_gaz"] = self._async_safe_call(
+                    "estimationGaz",
+                    self.client.async_get_estimation_gaz(self.ref_bp, self.compte_contrat),
+                )
+
+            task_keys = list(conso_tasks.keys())
+            task_values = await asyncio.gather(*(conso_tasks[k] for k in task_keys))
+            conso_res = dict(zip(task_keys, task_values))
+
+            ma_conso_jour = conso_res.get("ma_conso_jour") or {}
+            histo_elec_mois = conso_res.get("histo_elec_mois") or {}
+            histo_gaz_mois = conso_res.get("histo_gaz_mois") or {}
+            histo_elec_heures = conso_res.get("histo_elec_heures") or {}
+            est_elec = conso_res.get("est_elec") or {}
+            est_gaz = conso_res.get("est_gaz") or {}
+            hphc_jour = conso_res.get("hphc_jour") or {}
+            carbone = conso_res.get("carbone") or {}
+            elec_variation_raw = conso_res.get("elec_variation_raw") or {}
+            gaz_variation_raw = conso_res.get("gaz_variation_raw") or {}
 
             elec_variation = parse_consumption_variation(elec_variation_raw)
             gaz_variation = parse_consumption_variation(gaz_variation_raw)
 
-            # 3. Billing, Invoices, Payments, Engagement & Consents (throttled every 6h)
+            # 3. Billing, Invoices, Payments, Engagement & Consents (throttled every 6h, parallelized)
             now_ts = time.time()
             if not self._billing_cache or (now_ts - self._last_billing_fetch) >= self._billing_refresh_seconds:
-                solde: dict[str, Any] = {}
-                plan_mens: dict[str, Any] = {}
-                factures: dict[str, Any] = {}
-                paiements: dict[str, Any] = {}
-                engagement: dict[str, Any] = {}
-                services_options: dict[str, Any] = {}
-                repartition_usages: dict[str, Any] = {}
-                cheque_energie: dict[str, Any] = {}
-                accords: dict[str, Any] = {}
-
-                for target_name, coro in (
-                    ("soldeApayerV2", self.client.async_get_solde(self.ref_bp, self.compte_contrat)),
-                    ("planMensV2", self.client.async_get_plan_mens(self.ref_bp, self.compte_contrat)),
-                    ("listeFacture", self.client.async_get_factures(self.ref_bp, self.compte_contrat)),
-                    ("paiements", self.client.async_get_paiements(self.ref_bp, self.compte_contrat)),
-                    ("engagementSolde", self.client.async_get_engagement_solde(self.ref_bp, self.compte_contrat)),
-                    ("chequeEnergie", self.client.async_get_info_cheque_energie(self.ref_bp, self.compte_contrat)),
-                ):
-                    try:
-                        val = await coro
-                        if target_name == "soldeApayerV2":
-                            solde = val
-                        elif target_name == "planMensV2":
-                            plan_mens = val
-                        elif target_name == "listeFacture":
-                            factures = val
-                        elif target_name == "paiements":
-                            paiements = val
-                        elif target_name == "engagementSolde":
-                            engagement = val
-                        elif target_name == "chequeEnergie":
-                            cheque_energie = val
-                    except EngieApiError as err:
-                        _LOGGER.debug("%s notice: %s", target_name, err)
-
                 t_en = "DUAL" if (has_elec and has_gaz) else ("ELEC" if has_elec else "GAZ")
-                try:
-                    services_options = await self.client.async_get_services_options(
-                        self.ref_bp, self.compte_contrat, type_energie=t_en
-                    )
-                except EngieApiError:
-                    pass
-                try:
-                    repartition_usages = await self.client.async_get_repartition_usages_courbe(
-                        self.ref_bp, self.compte_contrat, user_type, t_en, start_45d_ms, end_ms
-                    )
-                except EngieApiError:
-                    pass
-                try:
-                    accords = await self.client.async_get_accords(self.ref_bp, self.compte_contrat)
-                except EngieApiError:
-                    pass
-
-                self._billing_cache = {
-                    "solde": solde,
-                    "plan_mens": plan_mens,
-                    "factures": factures,
-                    "paiements": paiements,
-                    "engagement": engagement,
-                    "services_options": services_options,
-                    "repartition_usages": repartition_usages,
-                    "cheque_energie": cheque_energie,
-                    "accords": accords,
+                billing_tasks = {
+                    "solde": self._async_safe_call(
+                        "soldeApayerV2", self.client.async_get_solde(self.ref_bp, self.compte_contrat)
+                    ),
+                    "plan_mens": self._async_safe_call(
+                        "planMensV2", self.client.async_get_plan_mens(self.ref_bp, self.compte_contrat)
+                    ),
+                    "factures": self._async_safe_call(
+                        "listeFacture", self.client.async_get_factures(self.ref_bp, self.compte_contrat)
+                    ),
+                    "paiements": self._async_safe_call(
+                        "paiements", self.client.async_get_paiements(self.ref_bp, self.compte_contrat)
+                    ),
+                    "engagement": self._async_safe_call(
+                        "engagementSolde", self.client.async_get_engagement_solde(self.ref_bp, self.compte_contrat)
+                    ),
+                    "cheque_energie": self._async_safe_call(
+                        "chequeEnergie", self.client.async_get_info_cheque_energie(self.ref_bp, self.compte_contrat)
+                    ),
+                    "services_options": self._async_safe_call(
+                        "servicesEtOptions",
+                        self.client.async_get_services_options(self.ref_bp, self.compte_contrat, type_energie=t_en),
+                    ),
+                    "repartition_usages": self._async_safe_call(
+                        "repartitionUsages",
+                        self.client.async_get_repartition_usages_courbe(
+                            self.ref_bp, self.compte_contrat, user_type, t_en, start_45d_ms, end_ms
+                        ),
+                    ),
+                    "accords": self._async_safe_call(
+                        "accords", self.client.async_get_accords(self.ref_bp, self.compte_contrat)
+                    ),
                 }
+                b_keys = list(billing_tasks.keys())
+                b_vals = await asyncio.gather(*(billing_tasks[k] for k in b_keys))
+                self._billing_cache = dict(zip(b_keys, b_vals))
                 self._last_billing_fetch = now_ts
 
-            # 4. ERL Live Telemetry (if active)
+            # 4. ERL Live Telemetry (if active) + fast polling adjustment
             erl_data: dict[str, Any] = {}
             if summary.get("client_erl"):
-                try:
-                    erl_data = await self.client.async_get_erl_live(self.compte_contrat)
-                except EngieApiError as err:
-                    _LOGGER.debug("ERL live fetch notice: %s", err)
+                options = getattr(self.entry, "options", None) or {}
+                if CONF_SCAN_INTERVAL not in options:
+                    self.update_interval = timedelta(seconds=ERL_REFRESH_SECONDS)
+                erl_data = await self._async_safe_call(
+                    "ERL live", self.client.async_get_erl_live(self.compte_contrat)
+                )
 
-            # 5. Compute Normalized Totals for Sensors
-            elec_hist = ma_conso_jour.get("historiquesElec") or []
-            gaz_hist = ma_conso_jour.get("historiquesGaz") or []
+            # 5. Compute Normalized Totals for Sensors & Charts
+            elec_hist = _enrich_period_records(ma_conso_jour.get("historiquesElec") or [], is_daily=True)
+            gaz_hist = _enrich_period_records(ma_conso_jour.get("historiquesGaz") or [], is_daily=True)
 
-            elec_months = histo_elec_mois.get("historiquesElec") or []
-            gaz_months = histo_gaz_mois.get("historiquesGaz") or []
+            elec_months = _enrich_period_records(histo_elec_mois.get("historiquesElec") or [], is_daily=False)
+            gaz_months = _enrich_period_records(histo_gaz_mois.get("historiquesGaz") or [], is_daily=False)
+            elec_hourly = _enrich_hourly_records((histo_elec_heures.get("historiquesElec") or [])[-24:])
 
             # Trigger retroactive history import once after initial setup if enabled
             if not self._history_imported and self.entry.data.get(CONF_IMPORT_HISTORY, True):
@@ -409,6 +476,7 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "gaz_daily": gaz_hist,
                 "elec_monthly": elec_months,
                 "gaz_monthly": gaz_months,
+                "elec_hourly": elec_hourly,
                 "elec_monthly_raw": histo_elec_mois,
                 "gaz_monthly_raw": histo_gaz_mois,
                 "elec_variation": elec_variation,
@@ -453,12 +521,12 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     end_ms,
                     pas_temps=PAS_TEMPS_JOUR,
                 )
-                elec_records = conso_hist.get("historiquesElec") or []
-                gaz_records = conso_hist.get("historiquesGaz") or []
+                elec_records = list(conso_hist.get("historiquesElec") or [])
+                gaz_records = list(conso_hist.get("historiquesGaz") or [])
             except EngieApiError as err:
                 _LOGGER.debug("courbe/maConso backfill notice: %s", err)
 
-            # Also merge recent 30d hourly points for Electricity if available
+            # Merge recent 30d hourly points for Electricity without double-counting covered days
             if summary.get("has_elec"):
                 try:
                     start_30d_ms = int((now_dt - timedelta(days=30)).timestamp() * 1000)
@@ -467,19 +535,50 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     hourly_elec = hourly.get("historiquesElec") or []
                     if hourly_elec:
-                        elec_records = elec_records + hourly_elec
+                        hourly_dates = {
+                            dt.date()
+                            for rec in hourly_elec
+                            if isinstance(rec, dict)
+                            for dt in [
+                                parse_engie_datetime_utc(
+                                    rec.get("valeurDate") or rec.get("dateDebut") or rec.get("date")
+                                )
+                            ]
+                            if dt is not None
+                        }
+                        if hourly_dates and elec_records:
+                            elec_records = [
+                                rec
+                                for rec in elec_records
+                                if (
+                                    (
+                                        dt := parse_engie_datetime_utc(
+                                            rec.get("valeurDate") or rec.get("dateDebut") or rec.get("date")
+                                        )
+                                    )
+                                    is None
+                                    or dt.date() not in hourly_dates
+                                )
+                            ]
+                        elec_records = elec_records + list(hourly_elec)
                 except EngieApiError as err:
                     _LOGGER.debug("histoElecHeures backfill notice: %s", err)
 
-            # Fallback to monthly variation datapoints if maConso endpoints returned empty/403
+            # Fallback to monthly history or monthly variation datapoints if maConso returned empty/403
             if not elec_records:
-                ev = self.data.get("elec_variation") or {}
-                if ev.get("month_date") and ev.get("month_kwh") is not None:
-                    elec_records = [{"valeurDate": ev["month_date"], "conso": ev["month_kwh"]}]
+                if self.data.get("elec_monthly"):
+                    elec_records = list(self.data["elec_monthly"])
+                else:
+                    ev = self.data.get("elec_variation") or {}
+                    if ev.get("month_date") and ev.get("month_kwh") is not None:
+                        elec_records = [{"valeurDate": ev["month_date"], "conso": ev["month_kwh"]}]
             if not gaz_records:
-                gv = self.data.get("gaz_variation") or {}
-                if gv.get("month_date") and gv.get("month_kwh") is not None:
-                    gaz_records = [{"valeurDate": gv["month_date"], "conso": gv["month_kwh"]}]
+                if self.data.get("gaz_monthly"):
+                    gaz_records = list(self.data["gaz_monthly"])
+                else:
+                    gv = self.data.get("gaz_variation") or {}
+                    if gv.get("month_date") and gv.get("month_kwh") is not None:
+                        gaz_records = [{"valeurDate": gv["month_date"], "conso": gv["month_kwh"]}]
 
             if not elec_records and not gaz_records:
                 return 0

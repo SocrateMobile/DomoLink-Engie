@@ -127,14 +127,27 @@ def determine_user_type(
     return "ELECCO" if elec_comm else "ELECNC"
 
 
-def create_engie_aiohttp_session() -> aiohttp.ClientSession:
-    """Create an aiohttp session supporting ENGIE's oversized (>8KB) CSP headers."""
+def _build_ssl_context() -> ssl.SSLContext | bool:
+    """Build SSL context using certifi CA bundle (safe to run in executor)."""
     try:
         import certifi
 
-        ssl_ctx: ssl.SSLContext | bool = ssl.create_default_context(cafile=certifi.where())
+        return ssl.create_default_context(cafile=certifi.where())
     except ImportError:
-        ssl_ctx = True
+        return True
+
+
+def create_engie_aiohttp_session(
+    ssl_ctx: ssl.SSLContext | bool | None = None,
+) -> aiohttp.ClientSession:
+    """Create an aiohttp session supporting ENGIE's oversized (>8KB) CSP headers."""
+    if ssl_ctx is None:
+        try:
+            from homeassistant.util.ssl import get_default_context
+
+            ssl_ctx = get_default_context()
+        except Exception:
+            ssl_ctx = _build_ssl_context()
 
     connector = aiohttp.TCPConnector(ssl=ssl_ctx)
     return aiohttp.ClientSession(
@@ -143,6 +156,21 @@ def create_engie_aiohttp_session() -> aiohttp.ClientSession:
         max_line_size=ENGIE_HTTP_HEADER_LIMIT,
         max_field_size=ENGIE_HTTP_HEADER_LIMIT,
     )
+
+
+async def async_create_engie_aiohttp_session(hass: Any = None) -> aiohttp.ClientSession:
+    """Asynchronously create an aiohttp session without blocking the HA event loop."""
+    ssl_ctx: ssl.SSLContext | bool | None = None
+    try:
+        from homeassistant.util.ssl import get_default_context
+
+        ssl_ctx = get_default_context()
+    except Exception:
+        if hass is not None and hasattr(hass, "async_add_executor_job"):
+            ssl_ctx = await hass.async_add_executor_job(_build_ssl_context)
+        else:
+            ssl_ctx = _build_ssl_context()
+    return create_engie_aiohttp_session(ssl_ctx=ssl_ctx)
 
 
 def extract_id_personne_from_jwt(access_token: str | None) -> str:

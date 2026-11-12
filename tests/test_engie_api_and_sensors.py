@@ -13,7 +13,42 @@ import types
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _Approx:
+        def __init__(self, val: float, rel: float = 1e-6, abs: float = 1e-12) -> None:
+            self.val = val
+            self.rel = rel
+            self.abs = abs
+
+        def __eq__(self, other: Any) -> bool:
+            try:
+                tol = max(self.abs, abs(self.val) * self.rel)
+                return abs(float(other) - float(self.val)) <= tol
+            except Exception:
+                return False
+
+    class _RaisesCtx:
+        def __init__(self, exc_type: Any) -> None:
+            self.exc_type = exc_type
+            self.value: Any = None
+
+        def __enter__(self) -> "_RaisesCtx":
+            return self
+
+        def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+            if exc_type is not None and issubclass(exc_type, self.exc_type):
+                self.value = exc_val
+                return True
+            raise AssertionError(f"Expected {self.exc_type}, got {exc_type}")
+
+    class _PytestStub:
+        approx = _Approx
+        raises = _RaisesCtx
+        mark = types.SimpleNamespace(asyncio=lambda fn: fn)
+
+    pytest = _PytestStub()  # type: ignore[assignment]
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMP_DIR = os.path.join(REPO_ROOT, "custom_components", "domolink_engie")
@@ -21,6 +56,32 @@ COMP_DIR = os.path.join(REPO_ROOT, "custom_components", "domolink_engie")
 
 def _install_ha_stubs() -> None:
     """Install lightweight Home Assistant stubs for standalone pytest execution."""
+    if "aiohttp" not in sys.modules:
+        try:
+            import aiohttp  # noqa: F401
+        except ImportError:
+            aiohttp_stub = types.ModuleType("aiohttp")
+            aiohttp_stub.ClientError = type("ClientError", (Exception,), {})
+            aiohttp_stub.ClientSession = MagicMock
+            aiohttp_stub.ClientTimeout = MagicMock
+            aiohttp_stub.CookieJar = MagicMock
+            aiohttp_stub.TCPConnector = MagicMock
+            sys.modules["aiohttp"] = aiohttp_stub
+
+    if "voluptuous" not in sys.modules:
+        try:
+            import voluptuous  # noqa: F401
+        except ImportError:
+            vol_stub = types.ModuleType("voluptuous")
+            vol_stub.Schema = lambda s: s
+            vol_stub.Required = lambda k, **kw: k
+            vol_stub.Optional = lambda k, **kw: k
+            vol_stub.In = lambda v: v
+            vol_stub.All = lambda *a: a
+            vol_stub.Coerce = lambda t: t
+            vol_stub.Range = lambda **kw: kw
+            sys.modules["voluptuous"] = vol_stub
+
     if "homeassistant" in sys.modules:
         return
 
@@ -39,9 +100,13 @@ def _install_ha_stubs() -> None:
     class UnitOfApparentPower:
         VOLT_AMPERE = "VA"
 
+    class UnitOfTemperature:
+        CELSIUS = "°C"
+
     const_mod.UnitOfEnergy = UnitOfEnergy
     const_mod.UnitOfVolume = UnitOfVolume
     const_mod.UnitOfApparentPower = UnitOfApparentPower
+    const_mod.UnitOfTemperature = UnitOfTemperature
     sys.modules["homeassistant.const"] = const_mod
 
     core_mod = types.ModuleType("homeassistant.core")
@@ -127,6 +192,7 @@ def _install_ha_stubs() -> None:
         MONETARY = "monetary"
         DATE = "date"
         APPARENT_POWER = "apparent_power"
+        TEMPERATURE = "temperature"
 
     class SensorStateClass:
         MEASUREMENT = "measurement"
@@ -205,6 +271,7 @@ def _load_mod(name: str):
 
 const = _load_mod("const")
 engie_api = _load_mod("engie_api")
+zlinky = _load_mod("zlinky")
 statistics = _load_mod("statistics")
 coordinator = _load_mod("coordinator")
 sensor = _load_mod("sensor")
@@ -653,4 +720,112 @@ def test_v11_frontend_assets_options_flow_and_repartition_sensors():
     assert snap["compte_contrat"] == "600123456"
     assert snap["has_elec"] is True
     assert snap["billing"]["repartition_usages"]["repartitionUsagesGaz"][0]["valeur"] == 82.0
+
+
+def test_zlinky_tic_autodetection_and_manual_overrides():
+    """Verify ZLinky_TIC auto-detection across Z2M/ZHA/deCONZ and manual sensor overrides."""
+    fake_hass = MagicMock()
+    fake_hass.states = {
+        "sensor.zlinky_tic_sinsts": {"state": "840", "attributes": {"unit_of_measurement": "VA", "friendly_name": "ZLinky Puissance"}},
+        "sensor.zlinky_tic_irms1": {"state": "3.6", "attributes": {"unit_of_measurement": "A", "friendly_name": "ZLinky Intensité"}},
+        "sensor.zlinky_tic_urms1": {"state": "233", "attributes": {"unit_of_measurement": "V", "friendly_name": "ZLinky Tension"}},
+        "sensor.zlinky_tic_east": {"state": "15242500", "attributes": {"unit_of_measurement": "Wh", "friendly_name": "ZLinky Index Total"}},
+        "sensor.zlinky_tic_easf01": {"state": "5235.4", "attributes": {"unit_of_measurement": "kWh", "friendly_name": "ZLinky Index HC"}},
+        "sensor.zlinky_tic_easf02": {"state": "10007.1", "attributes": {"unit_of_measurement": "kWh", "friendly_name": "ZLinky Index HP"}},
+        "sensor.zlinky_tic_ptec": {"state": "HC..", "attributes": {"friendly_name": "ZLinky Tarif"}},
+        "sensor.zlinky_tic_smaxsn": {"state": "4120", "attributes": {"unit_of_measurement": "VA"}},
+        "sensor.zlinky_tic_isousc": {"state": "30", "attributes": {"unit_of_measurement": "A"}},
+        "sensor.custom_power_override": {"state": "1250", "attributes": {"unit_of_measurement": "VA"}},
+    }
+
+    elec_releve = {"dernierIndex": "15230.0", "dernierIndexHC": "5230.0", "dernierIndexHP": "10000.0"}
+    res = zlinky.detect_and_resolve_zlinky(fake_hass, options={}, elec_releve=elec_releve)
+
+    assert res["detected"] is True
+    assert res["device_prefix"] == "zlinky_tic"
+    assert len(res["detected_devices"]) >= 1
+    assert res["live"]["power_va"] == 840.0
+    assert res["live"]["current_a"] == 3.6
+    assert res["live"]["voltage_v"] == 233.0
+    assert res["live"]["index_total_kwh"] == 15242.5  # Wh converted to kWh
+    assert res["live"]["index_hc_kwh"] == 5235.4
+    assert res["live"]["index_hp_kwh"] == 10007.1
+    assert res["live"]["ptec"] == "HC.."
+    assert res["live"]["is_hc"] is True
+    assert res["live"]["max_power_va"] == 4120.0
+    assert res["live"]["pref_kva"] == 6.0  # 30A -> 6 kVA
+    assert res["live"]["daily_hc_kwh"] == 5.4
+    assert res["live"]["daily_hp_kwh"] == 7.1
+    assert res["live"]["daily_energy_kwh"] == 12.5
+
+    # Verify manual override takes precedence over auto-detected entity
+    res_manual = zlinky.detect_and_resolve_zlinky(
+        fake_hass,
+        options={"zlinky_power_sensor": "sensor.custom_power_override"},
+        elec_releve=elec_releve,
+    )
+    assert res_manual["resolved"]["zlinky_power_sensor"] == "sensor.custom_power_override"
+    assert res_manual["live"]["power_va"] == 1250.0
+
+    # Verify value-aware & unit-aware matching: 1010 VA sensor beats 0 VA register and 19 W 'atlantic'/'diagnostic' sensor
+    fake_hass_compete = MagicMock()
+    fake_hass_compete.states = {
+        "sensor.zlinky_tic_sinsts1": {"state": "0", "attributes": {"unit_of_measurement": "VA"}},
+        "sensor.atlantic_chauffe_eau_active_power": {"state": "19", "attributes": {"unit_of_measurement": "W"}},
+        "sensor.diagnostic_system_power": {"state": "19", "attributes": {"unit_of_measurement": "VA"}},
+        "sensor.compteur_linky_puissance_apparente": {"state": "1010", "attributes": {"unit_of_measurement": "VA"}},
+    }
+    res_compete = zlinky.detect_and_resolve_zlinky(fake_hass_compete, options={})
+    assert res_compete["resolved"]["zlinky_power_sensor"] == "sensor.compteur_linky_puissance_apparente"
+    assert res_compete["live"]["power_va"] == 1010.0
+
+
+def test_v13_new_sensors_hphc_regularisation_erl_and_initial_sum():
+    """Verify new HP/HC sensors, regularization estimation, ERL avg power, and cumulative initial_sum."""
+    records = [
+        {"valeurDate": "2026-11-10", "conso": 10.0},
+        {"valeurDate": "2026-11-11", "conso": 15.0},
+    ]
+    series = statistics.build_cumulative_series(records, "conso", initial_sum=100.0)
+    assert series[0]["sum"] == 110.0
+    assert series[1]["sum"] == 125.0
+
+    by_key = {d.key: d for d in sensor.SENSOR_DESCRIPTIONS}
+    mock_data = {
+        "summary": {"has_elec": True, "has_gaz": True, "client_erl": True},
+        "elec_daily": [{"valeurDate": "2026-11-10", "conso": 14.0, "consoEuro": 3.5, "temperature": 11.4}],
+        "elec_monthly": [{"valeurDate": "2026-11-01", "conso": 310.0, "consoEuro": 75.0}],
+        "gaz_monthly": [{"valeurDate": "2026-11-01", "conso": 820.0, "consoEuro": 95.0}],
+        "est_elec": {
+            "cadrans": [
+                {"code": "HP", "prixKwh": "0,2700"},
+                {"code": "HC", "prixKwh": "0,2068"},
+            ]
+        },
+        "hphc_jour": {
+            "historiquesElec": [
+                {"valeurDate": "2026-11-10", "consoHP": 8.0, "consoHC": 6.0},
+            ]
+        },
+        "billing": {
+            "plan_mens": {
+                "listPlanMensCourant": [
+                    {"date": "12/09/2026", "montantMensualite": 200.0, "etatPaiement": "Réglé"},
+                    {"date": "12/10/2026", "montantMensualite": 200.0, "etatPaiement": "Réglé"},
+                    {"date": "12/11/2026", "montantMensualite": 200.0, "etatPaiement": "A Régler"},
+                ]
+            }
+        },
+        "erl": {"avg_power": {"avgPower": 680}, "max_power": {"maxElecDay": 4500}},
+    }
+
+    assert by_key["elec_price_hp"].value_fn(mock_data) == 0.27
+    assert by_key["elec_price_hc"].value_fn(mock_data) == 0.2068
+    assert by_key["elec_daily_hp"].value_fn(mock_data) == 8.0
+    assert by_key["elec_daily_hc"].value_fn(mock_data) == 6.0
+    assert by_key["elec_hc_ratio"].value_fn(mock_data) == 42.9
+    assert by_key["ext_temperature"].value_fn(mock_data) == 11.4
+    assert by_key["erl_avg_power"].value_fn(mock_data) == 680.0
+    assert by_key["account_regularisation_estimee"].value_fn(mock_data) is not None
+
 
