@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connexion ENGIE Particuliers",
+        "description": "Connectez-vous avec les identifiants de votre Espace Client ENGIE (Électricité & Gaz). Un code de vérification (MFA) vous sera demandé une seule fois si activé sur votre compte.",
+        "data": {
+          "username": "Adresse e-mail ENGIE",
+          "password": "Mot de passe",
+          "import_history": "Importer automatiquement les 12 derniers mois dans le Tableau de bord Énergie"
+        }
+      },
+      "mfa_select": {
+        "title": "Vérification en 2 étapes (MFA)",
+        "description": "Choisissez comment recevoir votre code de vérification ENGIE :",
+        "data": {
+          "factor_id": "Méthode de vérification"
+        }
+      },
+      "mfa_code": {
+        "title": "Saisir le code de sécurité",
+        "description": "Entrez le code reçu via {factor}. Ce code ne sera plus redemandé après la configuration.",
+        "data": {
+          "code": "Code de vérification (OTP)"
+        }
+      },
+      "contract": {
+        "title": "Sélection du logement / contrat",
+        "description": "Plusieurs comptes de contrat ENGIE ont été détectés sur votre espace client. Choisissez celui à intégrer :",
+        "data": {
+          "compte_contrat": "Compte Contrat ENGIE"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ré-authentification ENGIE requise",
+        "description": "Votre session ENGIE a expiré. Veuillez ressaisir vos identifiants pour restaurer la synchronisation.",
+        "data": {
+          "username": "Adresse e-mail ENGIE",
+          "password": "Mot de passe"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Identifiant ou mot de passe ENGIE incorrect.",
+      "invalid_mfa_code": "Code de vérification invalide ou expiré.",
+      "no_mfa_factor": "Aucun facteur MFA compatible (SMS/E-mail) trouvé sur ce compte.",
+      "cannot_connect": "Impossible de joindre les serveurs ENGIE / Okta.",
+      "unknown": "Erreur inattendue lors de l'authentification."
+    },
+    "abort": {
+      "already_configured": "Ce compte contrat ENGIE est déjà configuré.",
+      "no_contracts": "Aucun contrat actif détecté sur cet espace client ENGIE.",
+      "cannot_connect": "Échec de récupération des contrats après authentification.",
+      "reauth_successful": "Ré-authentification ENGIE réussie."
+    }
+  }
+}
