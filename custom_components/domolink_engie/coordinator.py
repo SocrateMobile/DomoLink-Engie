@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     BILLING_REFRESH_SECONDS,
     CONF_ACCESS_TOKEN,
+    CONF_BILLING_INTERVAL,
     CONF_CODE_POSTAL,
     CONF_COMPTE_CONTRAT,
     CONF_ID_PERSONNE,
@@ -21,11 +22,11 @@ from .const import (
     CONF_IMPORT_HISTORY,
     CONF_REFRESH_TOKEN,
     CONF_REF_BP,
+    CONF_SCAN_INTERVAL,
     CONF_TOKEN_EXPIRES_AT,
     DEFAULT_SCAN_INTERVAL_SECONDS,
     DOMAIN,
     PAS_TEMPS_JOUR,
-    PAS_TEMPS_MOIS,
 )
 from .engie_api import (
     EngieApiClient,
@@ -165,11 +166,17 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._billing_cache: dict[str, Any] = {}
         self._history_imported: bool = False
 
+        options = getattr(entry, "options", None) or {}
+        scan_mins = int(options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_SECONDS // 60))
+        self._billing_refresh_seconds = int(
+            options.get(CONF_BILLING_INTERVAL, BILLING_REFRESH_SECONDS // 3600)
+        ) * 3600
+
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{self.compte_contrat}",
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL_SECONDS),
+            update_interval=timedelta(minutes=max(30, scan_mins)),
         )
 
     async def async_persist_tokens(self, tokens: dict[str, Any]) -> None:
@@ -305,7 +312,7 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # 3. Billing, Invoices, Payments, Engagement & Consents (throttled every 6h)
             now_ts = time.time()
-            if not self._billing_cache or (now_ts - self._last_billing_fetch) >= BILLING_REFRESH_SECONDS:
+            if not self._billing_cache or (now_ts - self._last_billing_fetch) >= self._billing_refresh_seconds:
                 solde: dict[str, Any] = {}
                 plan_mens: dict[str, Any] = {}
                 factures: dict[str, Any] = {}

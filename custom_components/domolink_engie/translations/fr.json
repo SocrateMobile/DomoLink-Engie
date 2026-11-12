@@ -53,5 +53,17 @@
       "cannot_connect": "Échec de récupération des contrats après authentification.",
       "reauth_successful": "Ré-authentification ENGIE réussie."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options DomoLink ENGIE",
+        "description": "Configurez les intervalles de synchronisation avec les serveurs ENGIE.",
+        "data": {
+          "scan_interval": "Intervalle de mise à jour consommation & relevés (minutes)",
+          "billing_interval": "Intervalle de mise à jour facturation & mensualités (heures)"
+        }
+      }
+    }
   }
 }

@@ -12,6 +12,7 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
     CONF_ACCESS_TOKEN,
+    CONF_BILLING_INTERVAL,
     CONF_CODE_POSTAL,
     CONF_COMPTE_CONTRAT,
     CONF_ID_PERSONNE,
@@ -19,6 +20,7 @@ from .const import (
     CONF_IMPORT_HISTORY,
     CONF_REFRESH_TOKEN,
     CONF_REF_BP,
+    CONF_SCAN_INTERVAL,
     CONF_TOKEN_EXPIRES_AT,
     CONF_USERNAME,
     DOMAIN,
@@ -306,3 +308,38 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Prompt credentials for reauth."""
         return await self.async_step_user(user_input)
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Return the options flow handler for DomoLink ENGIE."""
+        return EngieOptionsFlowHandler(config_entry)
+
+
+class EngieOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle DomoLink ENGIE polling interval options."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage polling intervals for consumption & billing."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_scan = int(self._config_entry.options.get(CONF_SCAN_INTERVAL, 120))
+        current_billing = int(self._config_entry.options.get(CONF_BILLING_INTERVAL, 6))
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_SCAN_INTERVAL, default=current_scan): vol.All(
+                    int, vol.Range(min=30, max=360)
+                ),
+                vol.Optional(CONF_BILLING_INTERVAL, default=current_billing): vol.All(
+                    int, vol.Range(min=1, max=24)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

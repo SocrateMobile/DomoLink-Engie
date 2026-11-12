@@ -2,7 +2,17 @@
 from __future__ import annotations
 
 DOMAIN = "domolink_engie"
+VERSION = "1.1.0"
 PLATFORMS: list[str] = ["sensor", "binary_sensor"]
+
+# Frontend Panel & Lovelace Card
+FRONTEND_URL_PATH = "/domolink_engie_panel"
+PANEL_URL_PATH = "domolink-engie"
+PANEL_NAME = "domolink-engie-panel"
+PANEL_TITLE = "DomoLink ENGIE"
+PANEL_ICON = "mdi:lightning-bolt-circle"
+PANEL_FILE_NAME = "domolink-engie-panel.js"
+CARD_FILE_NAME = "domolink-engie-card.js"
 
 # Configuration Keys
 CONF_USERNAME = "username"
@@ -15,6 +25,8 @@ CONF_COMPTE_CONTRAT = "compte_contrat"
 CONF_CODE_POSTAL = "code_postal"
 CONF_ID_PERSONNE = "id_personne"
 CONF_IMPORT_HISTORY = "import_history"
+CONF_SCAN_INTERVAL = "scan_interval"
+CONF_BILLING_INTERVAL = "billing_interval"
 
 # Default Polling Intervals
 DEFAULT_SCAN_INTERVAL_SECONDS = 7200  # 2 hours for consumption & meter data

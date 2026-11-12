@@ -53,5 +53,17 @@
       "cannot_connect": "Failed to fetch contracts after authentication.",
       "reauth_successful": "ENGIE re-authentication successful."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DomoLink ENGIE Options",
+        "description": "Configure polling intervals for ENGIE servers.",
+        "data": {
+          "scan_interval": "Consumption & meter update interval (minutes)",
+          "billing_interval": "Billing & installment update interval (hours)"
+        }
+      }
+    }
   }
 }

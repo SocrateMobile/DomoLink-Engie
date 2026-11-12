@@ -137,6 +137,46 @@ def _extract_latest_payment(data: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _extract_usage_repartition(data: dict[str, Any], list_key: str) -> tuple[str | None, dict[str, Any]]:
+    """Extract top usage category and full percentage map from courbe/getRepartitionUsages."""
+    rep = (data.get("billing") or {}).get("repartition_usages") or {}
+    items = rep.get(list_key) or []
+    if not isinstance(items, list) or not items:
+        return None, {}
+    valid = [it for it in items if isinstance(it, dict) and it.get("libelle")]
+    if not valid:
+        return None, {}
+    top = max(valid, key=lambda it: safe_float(it.get("valeur")) or 0.0)
+    breakdown = {
+        str(it["libelle"]): safe_float(it.get("valeur"))
+        for it in valid
+        if safe_float(it.get("valeur")) is not None
+    }
+    top_val = safe_float(top.get("valeur"))
+    label = f"{top['libelle']} ({top_val:.0f}%)" if top_val is not None else str(top["libelle"])
+    return label, {"repartition": breakdown, "items": valid}
+
+
+def _extract_services_options(data: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Extract active subscribed services count & list from servicesEtOptions."""
+    svc_raw = (data.get("billing") or {}).get("services_options") or {}
+    services = svc_raw.get("services") or []
+    if not isinstance(services, list):
+        return 0, {}
+    active = [s.get("libelle") or s.get("code") for s in services if isinstance(s, dict) and s.get("souscriptionService")]
+    summary = [
+        {
+            "code": s.get("code"),
+            "libelle": s.get("libelle"),
+            "prix": s.get("prix"),
+            "souscrit": bool(s.get("souscriptionService")),
+        }
+        for s in services
+        if isinstance(s, dict)
+    ]
+    return len(active), {"services_actifs": active, "catalogue": summary}
+
+
 def _extract_elec_monthly_kwh(data: dict[str, Any]) -> float | None:
     daily = _sum_current_month(data.get("elec_daily") or [], "conso")
     if daily is not None:
@@ -555,6 +595,15 @@ SENSOR_DESCRIPTIONS: tuple[EngieSensorDescription, ...] = (
             ),
             "prochaine_echeance": _extract_plan_mens_info(d)[0].get("date"),
             "etat_paiement": _extract_plan_mens_info(d)[0].get("etatPaiement"),
+            "echeancier": [
+                {
+                    "date": it.get("date"),
+                    "montant": safe_float(it.get("montantMensualite")),
+                    "etat": it.get("etatPaiement"),
+                }
+                for it in (((d.get("billing") or {}).get("plan_mens") or {}).get("listPlanMensCourant") or [])[:6]
+                if isinstance(it, dict)
+            ],
         },
     ),
     EngieSensorDescription(
@@ -620,6 +669,53 @@ SENSOR_DESCRIPTIONS: tuple[EngieSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:counter",
         value_fn=lambda d: _extract_plan_mens_info(d)[1],
+    ),
+    EngieSensorDescription(
+        key="elec_usage_repartition",
+        name="Répartition Usages Électricité",
+        device_group="elec",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:chart-donut",
+        condition_fn=lambda d: bool(((d.get("billing") or {}).get("repartition_usages") or {}).get("repartitionUsagesElec")),
+        value_fn=lambda d: _extract_usage_repartition(d, "repartitionUsagesElec")[0],
+        attrs_fn=lambda d: _extract_usage_repartition(d, "repartitionUsagesElec")[1],
+    ),
+    EngieSensorDescription(
+        key="gaz_usage_repartition",
+        name="Répartition Usages Gaz",
+        device_group="gaz",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:chart-donut",
+        condition_fn=lambda d: bool(((d.get("billing") or {}).get("repartition_usages") or {}).get("repartitionUsagesGaz")),
+        value_fn=lambda d: _extract_usage_repartition(d, "repartitionUsagesGaz")[0],
+        attrs_fn=lambda d: _extract_usage_repartition(d, "repartitionUsagesGaz")[1],
+    ),
+    EngieSensorDescription(
+        key="account_services_options",
+        name="Options & Services ENGIE Actifs",
+        device_group="account",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:puzzle-check-outline",
+        condition_fn=lambda d: bool(((d.get("billing") or {}).get("services_options") or {}).get("services")),
+        value_fn=lambda d: _extract_services_options(d)[0],
+        attrs_fn=lambda d: _extract_services_options(d)[1],
+    ),
+    EngieSensorDescription(
+        key="account_cheque_energie",
+        name="Chèque Énergie",
+        device_group="account",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:ticket-percent-outline",
+        condition_fn=lambda d: bool((d.get("billing") or {}).get("cheque_energie")),
+        value_fn=lambda d: (
+            "Encaissé"
+            if ((d.get("billing") or {}).get("cheque_energie") or {}).get("encaissementCheque")
+            else "Aucun"
+        ),
+        attrs_fn=lambda d: {
+            "montant": safe_float(((d.get("billing") or {}).get("cheque_energie") or {}).get("chequeEnergie")),
+            "date_paiement": ((d.get("billing") or {}).get("cheque_energie") or {}).get("datePaiement"),
+        },
     ),
     # --- ERL LIVE TELEMETRY (if active) ---
     EngieSensorDescription(
