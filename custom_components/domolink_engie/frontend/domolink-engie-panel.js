@@ -30,14 +30,19 @@ class DomoLinkEngiePanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._hass = null;
     this._snapshot = null;
-    this._activeTab = "overview";
+    this._activeTab = "moniteur";
     this._selectedEntryId = null;
     this._loading = false;
     this._toast = "";
+    this._moniteurState = { tab: "linky", period: "daily", lockTabs: false };
     this._cardGen = {
       kind: "custom",
-      title: "ENGIE Électricité & Gaz",
-      mode: "energy_full",
+      title: "Moniteur Énergie",
+      mode: "moniteur_full",
+      default_tab: "linky",
+      default_period: "daily",
+      power_sensor: "",
+      daily_energy_sensor: "",
       theme: "domolink_dark",
       show_cost: true,
       show_annual_comparison: true,
@@ -122,16 +127,21 @@ class DomoLinkEngiePanel extends HTMLElement {
       ].join("\n");
     }
 
+    const isMoniteurMode = String(g.mode || "").startsWith("moniteur_");
     return [
       "type: custom:domolink-engie-card",
       `title: "${g.title}"`,
       cc ? `compte_contrat: "${cc}"` : null,
       `mode: ${g.mode}`,
-      `theme: ${g.theme}`,
-      `show_cost: ${g.show_cost}`,
-      `show_annual_comparison: ${g.show_annual_comparison}`,
-      `show_usages: ${g.show_usages}`,
-      `show_billing: ${g.show_billing}`,
+      isMoniteurMode ? `default_tab: ${g.default_tab || "linky"}` : null,
+      isMoniteurMode ? `default_period: ${g.default_period || "daily"}` : null,
+      isMoniteurMode && g.power_sensor ? `power_sensor: ${g.power_sensor}` : null,
+      isMoniteurMode && g.daily_energy_sensor ? `daily_energy_sensor: ${g.daily_energy_sensor}` : null,
+      !isMoniteurMode ? `theme: ${g.theme}` : null,
+      !isMoniteurMode ? `show_cost: ${g.show_cost}` : null,
+      !isMoniteurMode ? `show_annual_comparison: ${g.show_annual_comparison}` : null,
+      !isMoniteurMode ? `show_usages: ${g.show_usages}` : null,
+      !isMoniteurMode ? `show_billing: ${g.show_billing}` : null,
     ]
       .filter(Boolean)
       .join("\n");
@@ -352,25 +362,49 @@ class DomoLinkEngiePanel extends HTMLElement {
             ${g.kind === "custom" ? `
               <label>Mode d'affichage
                 <select id="gen-mode">
-                  <option value="energy_full" ${g.mode === "energy_full" ? "selected" : ""}>Complet (Élec + Gaz + Usages + Budget)</option>
+                  <option value="moniteur_full" ${g.mode === "moniteur_full" ? "selected" : ""}>Moniteur Énergie Complet (DomoLink26 — LINKY + ÉLEC + GAZ)</option>
+                  <option value="moniteur_linky_24h" ${g.mode === "moniteur_linky_24h" ? "selected" : ""}>Moniteur LINKY 24h (Jauge + Courbe de Charge)</option>
+                  <option value="moniteur_elec" ${g.mode === "moniteur_elec" ? "selected" : ""}>Moniteur ÉLEC (Jour / Mois + EDF Tempo)</option>
+                  <option value="moniteur_gaz" ${g.mode === "moniteur_gaz" ? "selected" : ""}>Moniteur GAZ (Jauge Gazpar + Jour / Mois)</option>
+                  <option value="energy_full" ${g.mode === "energy_full" ? "selected" : ""}>Complet Classique (Élec + Gaz + Usages + Budget)</option>
                   <option value="compact" ${g.mode === "compact" ? "selected" : ""}>Compact (Élec + Gaz)</option>
                   <option value="billing" ${g.mode === "billing" ? "selected" : ""}>Facturation uniquement</option>
-                  <option value="elec_only" ${g.mode === "elec_only" ? "selected" : ""}>Électricité uniquement</option>
-                  <option value="gaz_only" ${g.mode === "gaz_only" ? "selected" : ""}>Gaz uniquement</option>
                 </select>
               </label>
-              <label>Thème
-                <select id="gen-theme">
-                  <option value="domolink_dark" ${g.theme === "domolink_dark" ? "selected" : ""}>DomoLink Dark</option>
-                  <option value="ha_default" ${g.theme === "ha_default" ? "selected" : ""}>Home Assistant Natif</option>
-                </select>
-              </label>
-              <div class="chk-row">
-                <label class="chk"><input id="gen-cost" type="checkbox" ${g.show_cost ? "checked" : ""}/> Coûts (€)</label>
-                <label class="chk"><input id="gen-annual" type="checkbox" ${g.show_annual_comparison ? "checked" : ""}/> Comparatif N / N-1</label>
-                <label class="chk"><input id="gen-usages" type="checkbox" ${g.show_usages ? "checked" : ""}/> Usages (%)</label>
-                <label class="chk"><input id="gen-billing" type="checkbox" ${g.show_billing ? "checked" : ""}/> Facturation</label>
-              </div>
+              ${String(g.mode || "").startsWith("moniteur_") ? `
+                <label>Onglet initial
+                  <select id="gen-default-tab">
+                    <option value="linky" ${g.default_tab === "linky" ? "selected" : ""}>LINKY (24h)</option>
+                    <option value="elec" ${g.default_tab === "elec" ? "selected" : ""}>ÉLEC</option>
+                    <option value="gas" ${g.default_tab === "gas" ? "selected" : ""}>GAZ</option>
+                  </select>
+                </label>
+                <label>Période par défaut (ÉLEC / GAZ)
+                  <select id="gen-default-period">
+                    <option value="daily" ${g.default_period === "daily" ? "selected" : ""}>Jour (14 derniers jours)</option>
+                    <option value="monthly" ${g.default_period === "monthly" ? "selected" : ""}>Mois (Jan–Déc N vs N-1)</option>
+                  </select>
+                </label>
+                <label>Capteur puissance VA optionnel
+                  <input id="gen-power-sensor" type="text" value="${esc(g.power_sensor || "")}" placeholder="Auto-détection si vide" />
+                </label>
+                <label>Capteur énergie jour optionnel
+                  <input id="gen-daily-sensor" type="text" value="${esc(g.daily_energy_sensor || "")}" placeholder="Auto-détection si vide" />
+                </label>
+              ` : `
+                <label>Thème
+                  <select id="gen-theme">
+                    <option value="domolink_dark" ${g.theme === "domolink_dark" ? "selected" : ""}>DomoLink Dark</option>
+                    <option value="ha_default" ${g.theme === "ha_default" ? "selected" : ""}>Home Assistant Natif</option>
+                  </select>
+                </label>
+                <div class="chk-row">
+                  <label class="chk"><input id="gen-cost" type="checkbox" ${g.show_cost ? "checked" : ""}/> Coûts (€)</label>
+                  <label class="chk"><input id="gen-annual" type="checkbox" ${g.show_annual_comparison ? "checked" : ""}/> Comparatif N / N-1</label>
+                  <label class="chk"><input id="gen-usages" type="checkbox" ${g.show_usages ? "checked" : ""}/> Usages (%)</label>
+                  <label class="chk"><input id="gen-billing" type="checkbox" ${g.show_billing ? "checked" : ""}/> Facturation</label>
+                </div>
+              `}
             ` : ""}
           </div>
           <pre class="yaml-box" id="yaml-output">${esc(yaml)}</pre>
@@ -412,7 +446,10 @@ class DomoLinkEngiePanel extends HTMLElement {
 
     let bodyHtml = `<div class="card muted">Chargement des données ENGIE...</div>`;
     if (acc) {
-      if (this._activeTab === "overview") bodyHtml = this._renderOverview(acc);
+      if (this._activeTab === "moniteur" && window.DomoLinkEngieMoniteur) {
+        bodyHtml = window.DomoLinkEngieMoniteur.renderMoniteurHTML(acc, this._hass, this._moniteurState, {});
+      }
+      else if (this._activeTab === "overview") bodyHtml = this._renderOverview(acc);
       else if (this._activeTab === "history") bodyHtml = this._renderHistoryUsages(acc);
       else if (this._activeTab === "billing") bodyHtml = this._renderBilling(acc);
       else if (this._activeTab === "generator") bodyHtml = this._renderGenerator(acc);
@@ -486,7 +523,8 @@ class DomoLinkEngiePanel extends HTMLElement {
         </div>
 
         <div class="tabs">
-          <button class="tab-btn ${this._activeTab === "overview" ? "active" : ""}" data-tab="overview">⚡ Vue d'ensemble</button>
+          <button class="tab-btn ${this._activeTab === "moniteur" ? "active" : ""}" data-tab="moniteur">⚡ Moniteur Énergie</button>
+          <button class="tab-btn ${this._activeTab === "overview" ? "active" : ""}" data-tab="overview">📋 Vue d'ensemble ENGIE</button>
           <button class="tab-btn ${this._activeTab === "history" ? "active" : ""}" data-tab="history">📊 Historique & Usages</button>
           <button class="tab-btn ${this._activeTab === "billing" ? "active" : ""}" data-tab="billing">💶 Facturation & Échéancier</button>
           <button class="tab-btn ${this._activeTab === "generator" ? "active" : ""}" data-tab="generator">🎨 Générateur Lovelace</button>
@@ -529,6 +567,20 @@ class DomoLinkEngiePanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll("[data-dlm-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._moniteurState.tab = btn.getAttribute("data-dlm-tab");
+        this._render();
+      });
+    });
+
+    this.shadowRoot.querySelectorAll("[data-dlm-period]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this._moniteurState.period = btn.getAttribute("data-dlm-period");
+        this._render();
+      });
+    });
+
     this.shadowRoot.querySelectorAll("[data-import]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const months = Number(btn.getAttribute("data-import") || 12);
@@ -557,6 +609,10 @@ class DomoLinkEngiePanel extends HTMLElement {
       bindGen("gen-kind", "kind");
       bindGen("gen-title", "title");
       bindGen("gen-mode", "mode");
+      bindGen("gen-default-tab", "default_tab");
+      bindGen("gen-default-period", "default_period");
+      bindGen("gen-power-sensor", "power_sensor");
+      bindGen("gen-daily-sensor", "daily_energy_sensor");
       bindGen("gen-theme", "theme");
       bindGen("gen-cost", "show_cost", true);
       bindGen("gen-annual", "show_annual_comparison", true);
@@ -581,6 +637,10 @@ class DomoLinkEngiePanel extends HTMLElement {
             title: this._cardGen.title,
             compte_contrat: acc?.compte_contrat || "",
             mode: this._cardGen.mode,
+            default_tab: this._cardGen.default_tab,
+            default_period: this._cardGen.default_period,
+            power_sensor: this._cardGen.power_sensor,
+            daily_energy_sensor: this._cardGen.daily_energy_sensor,
             theme: this._cardGen.theme,
             show_cost: this._cardGen.show_cost,
             show_annual_comparison: this._cardGen.show_annual_comparison,

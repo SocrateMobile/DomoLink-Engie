@@ -72,6 +72,11 @@ def _build_account_snapshot(
         "gaz_releve": data.get("gaz_releve") or {},
         "elec_variation": data.get("elec_variation") or {},
         "gaz_variation": data.get("gaz_variation") or {},
+        "elec_daily": data.get("elec_daily") or [],
+        "gaz_daily": data.get("gaz_daily") or [],
+        "elec_monthly": data.get("elec_monthly") or [],
+        "gaz_monthly": data.get("gaz_monthly") or [],
+        "elec_hourly": data.get("elec_hourly") or [],
         "billing": {
             "solde": billing.get("solde") or {},
             "plan_mens": billing.get("plan_mens") or {},
