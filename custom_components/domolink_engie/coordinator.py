@@ -464,7 +464,11 @@ class EngieDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Trigger retroactive history import once after initial setup if enabled
             if not self._history_imported and self.entry.data.get(CONF_IMPORT_HISTORY, True):
                 self._history_imported = True
-                self.hass.async_create_task(self.async_import_full_history(months=12))
+                self.entry.async_create_background_task(
+                    self.hass,
+                    self.async_import_full_history(months=12),
+                    f"{DOMAIN}_import_history_{self.entry.entry_id}",
+                )
 
             return {
                 "summary": summary,

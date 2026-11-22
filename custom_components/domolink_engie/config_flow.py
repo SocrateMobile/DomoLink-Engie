@@ -1,14 +1,14 @@
 """Config Flow for DomoLink ENGIE Électricité & Gaz."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import ConfigFlowResult
 
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -33,7 +33,7 @@ from .engie_api import (
     EngieApiError,
     EngieAuthError,
     EngieMfaRequired,
-    create_engie_aiohttp_session,
+    async_create_engie_aiohttp_session,
     extract_id_personne_from_jwt,
 )
 from .zlinky import detect_and_resolve_zlinky
@@ -68,43 +68,36 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._factors: list[dict[str, Any]] = []
         self._selected_factor: dict[str, Any] = {}
         self._tokens: dict[str, Any] = {}
+        self._cookies: dict[str, str] = {}
         self._contracts_choices: dict[str, dict[str, Any]] = {}
-        self._client: EngieApiClient | None = None
-        self._session: aiohttp.ClientSession | None = None
         self._reauth_entry: config_entries.ConfigEntry | None = None
 
-    def _get_client(self) -> EngieApiClient:
-        if self._session is None or self._session.closed:
-            self._session = create_engie_aiohttp_session()
-            self._client = EngieApiClient(self._session)
-        elif self._client is None:
-            self._client = EngieApiClient(self._session)
-        return self._client
+    @asynccontextmanager
+    async def _async_client(self):
+        """Provide a short-lived EngieApiClient whose session is always closed after the step."""
+        session = await async_create_engie_aiohttp_session(getattr(self, "hass", None))
+        client = EngieApiClient(
+            session,
+            access_token=self._tokens.get("access_token"),
+            refresh_token=self._tokens.get("refresh_token"),
+            id_token=self._tokens.get("id_token"),
+            token_expires_at=float(self._tokens.get("token_expires_at", 0.0)),
+        )
+        client._cookies.update(self._cookies)
+        try:
+            yield client
+        finally:
+            self._cookies.update(client._cookies)
+            if not session.closed:
+                await session.close()
 
-    async def _async_close_session(self) -> None:
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self._session = None
-        self._client = None
-
-    async def async_remove(self) -> None:
-        """Close the temporary HTTP session if the config flow is abandoned."""
-        await self._async_close_session()
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Step 1: Email and Password authentication."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._username = user_input[CONF_USERNAME].strip()
-            password = user_input["password"]
-            self._import_history = bool(user_input.get(CONF_IMPORT_HISTORY, True))
-            client = self._get_client()
-
+    async def _async_attempt_login(
+        self, username: str, password: str, errors: dict[str, str]
+    ) -> ConfigFlowResult | None:
+        """Attempt Okta login + initial MFA dispatch; returns a ConfigFlowResult on transition or None on error."""
+        async with self._async_client() as client:
             try:
-                self._tokens = await client.async_login_start(self._username, password)
+                self._tokens = await client.async_login_start(username, password)
             except EngieMfaRequired as mfa:
                 self._state_token = mfa.state_token
                 self._factors = [
@@ -115,7 +108,8 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if not self._factors:
                     errors["base"] = "no_mfa_factor"
-                elif len(self._factors) == 1:
+                    return None
+                if len(self._factors) == 1:
                     self._selected_factor = self._factors[0]
                     try:
                         if str(self._selected_factor.get("factorType", "")).lower() != "token:software:totp":
@@ -125,17 +119,34 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         return await self.async_step_mfa_code()
                     except EngieApiError:
                         errors["base"] = "cannot_connect"
-                else:
-                    return await self.async_step_mfa_select()
+                        return None
+                return await self.async_step_mfa_select()
             except EngieAuthError:
                 errors["base"] = "invalid_auth"
+                return None
             except EngieApiError:
                 errors["base"] = "cannot_connect"
+                return None
             except Exception as err:
                 _LOGGER.exception("Unexpected ENGIE login error: %s", err)
                 errors["base"] = "unknown"
-            else:
-                return await self._async_after_tokens()
+                return None
+
+        return await self._async_after_tokens()
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 1: Email and Password authentication."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self._username = user_input[CONF_USERNAME].strip()
+            password = user_input["password"]
+            self._import_history = bool(user_input.get(CONF_IMPORT_HISTORY, True))
+            result = await self._async_attempt_login(self._username, password, errors)
+            if result is not None:
+                return result
 
         schema = vol.Schema(
             {
@@ -148,7 +159,7 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_mfa_select(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Step 2a: Choose SMS or Email MFA factor when multiple are enrolled."""
         errors: dict[str, str] = {}
         factor_map = {str(f["id"]): f for f in self._factors if "id" in f}
@@ -157,42 +168,42 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             fid = user_input["factor_id"]
             self._selected_factor = factor_map[fid]
-            client = self._get_client()
-            try:
-                if str(self._selected_factor.get("factorType", "")).lower() != "token:software:totp":
-                    self._state_token = await client.async_send_mfa_challenge(
-                        self._state_token, self._selected_factor
-                    )
-                return await self.async_step_mfa_code()
-            except EngieApiError:
-                errors["base"] = "cannot_connect"
+            async with self._async_client() as client:
+                try:
+                    if str(self._selected_factor.get("factorType", "")).lower() != "token:software:totp":
+                        self._state_token = await client.async_send_mfa_challenge(
+                            self._state_token, self._selected_factor
+                        )
+                    return await self.async_step_mfa_code()
+                except EngieApiError:
+                    errors["base"] = "cannot_connect"
 
         schema = vol.Schema({vol.Required("factor_id"): vol.In(options)})
         return self.async_show_form(step_id="mfa_select", data_schema=schema, errors=errors)
 
     async def async_step_mfa_code(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Step 2b: Verify the one-time passcode received by SMS/Email."""
         errors: dict[str, str] = {}
         factor_label = _format_factor_label(self._selected_factor)
 
         if user_input is not None:
             pass_code = user_input["code"]
-            client = self._get_client()
-            try:
-                self._tokens = await client.async_verify_mfa_code(
-                    self._state_token, self._selected_factor, pass_code
-                )
-            except EngieAuthError:
-                errors["base"] = "invalid_mfa_code"
-            except EngieApiError:
-                errors["base"] = "cannot_connect"
-            except Exception as err:
-                _LOGGER.exception("Unexpected MFA verification error: %s", err)
-                errors["base"] = "unknown"
-            else:
-                return await self._async_after_tokens()
+            async with self._async_client() as client:
+                try:
+                    self._tokens = await client.async_verify_mfa_code(
+                        self._state_token, self._selected_factor, pass_code
+                    )
+                except EngieAuthError:
+                    errors["base"] = "invalid_mfa_code"
+                except EngieApiError:
+                    errors["base"] = "cannot_connect"
+                except Exception as err:
+                    _LOGGER.exception("Unexpected MFA verification error: %s", err)
+                    errors["base"] = "unknown"
+                else:
+                    return await self._async_after_tokens()
 
         schema = vol.Schema({vol.Required("code"): str})
         return self.async_show_form(
@@ -202,7 +213,7 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"factor": factor_label},
         )
 
-    async def _async_after_tokens(self) -> FlowResult:
+    async def _async_after_tokens(self) -> ConfigFlowResult:
         """Fetch contracts or update reauth entry once OAuth tokens are acquired."""
         if self._reauth_entry is not None:
             new_data = dict(self._reauth_entry.data)
@@ -211,18 +222,16 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             new_data[CONF_ID_TOKEN] = self._tokens.get("id_token")
             new_data[CONF_TOKEN_EXPIRES_AT] = self._tokens.get("token_expires_at", 0.0)
             self.hass.config_entries.async_update_entry(self._reauth_entry, data=new_data)
-            await self._async_close_session()
             await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
             return self.async_abort(reason="reauth_successful")
 
-        client = self._get_client()
-        try:
-            await client.async_init_session_cookies()
-            info_users = await client.async_get_info_users()
-        except EngieApiError as err:
-            _LOGGER.error("Failed to fetch ENGIE contracts after login: %s", err)
-            await self._async_close_session()
-            return self.async_abort(reason="cannot_connect")
+        async with self._async_client() as client:
+            try:
+                await client.async_init_session_cookies()
+                info_users = await client.async_get_info_users()
+            except EngieApiError as err:
+                _LOGGER.error("Failed to fetch ENGIE contracts after login: %s", err)
+                return self.async_abort(reason="cannot_connect")
 
         jwt_id_personne = extract_id_personne_from_jwt(self._tokens.get("access_token"))
         choices: dict[str, dict[str, Any]] = {}
@@ -254,7 +263,6 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
 
         if not choices:
-            await self._async_close_session()
             return self.async_abort(reason="no_contracts")
 
         self._contracts_choices = choices
@@ -266,7 +274,7 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_contract(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Step 3: Let user pick the CompteContrat if multiple exist."""
         options = {cc: info["label"] for cc, info in self._contracts_choices.items()}
 
@@ -277,9 +285,8 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({vol.Required(CONF_COMPTE_CONTRAT): vol.In(options)})
         return self.async_show_form(step_id="contract", data_schema=schema)
 
-    async def _async_create_cc_entry(self, cc_info: dict[str, Any]) -> FlowResult:
+    async def _async_create_cc_entry(self, cc_info: dict[str, Any]) -> ConfigFlowResult:
         """Create the Home Assistant ConfigEntry for the chosen CompteContrat."""
-        await self._async_close_session()
         num_cc = cc_info["compte_contrat"]
         await self.async_set_unique_id(f"engie_{num_cc}")
         self._abort_if_unique_id_configured()
@@ -299,7 +306,7 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         return self.async_create_entry(title=title, data=data)
 
-    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Handle re-authentication when OAuth refresh_token expires."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
@@ -309,27 +316,41 @@ class EngieConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Prompt credentials for reauth."""
-        return await self.async_step_user(user_input)
+    ) -> ConfigFlowResult:
+        """Prompt credentials for reauth without import_history."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self._username = user_input[CONF_USERNAME].strip()
+            password = user_input["password"]
+            result = await self._async_attempt_login(self._username, password, errors)
+            if result is not None:
+                return result
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_USERNAME, default=self._username): str,
+                vol.Required("password"): str,
+            }
+        )
+        return self.async_show_form(
+            step_id="reauth_confirm", data_schema=schema, errors=errors
+        )
 
     @staticmethod
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Return the options flow handler for DomoLink ENGIE."""
-        return EngieOptionsFlowHandler(config_entry)
+        return EngieOptionsFlowHandler()
 
 
 class EngieOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle DomoLink ENGIE polling interval and ZLinky_TIC real-time options."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Manage polling intervals and ZLinky_TIC sensor mapping."""
         if user_input is not None:
             cleaned = dict(user_input)
@@ -338,7 +359,7 @@ class EngieOptionsFlowHandler(config_entries.OptionsFlow):
                     cleaned[k] = str(cleaned[k] or "").strip()
             return self.async_create_entry(title="", data=cleaned)
 
-        opts = getattr(self._config_entry, "options", None) or {}
+        opts = getattr(self.config_entry, "options", None) or {}
         current_scan = int(opts.get(CONF_SCAN_INTERVAL, 120))
         current_billing = int(opts.get(CONF_BILLING_INTERVAL, 6))
         zlinky_enabled = bool(opts.get(CONF_ZLINKY_ENABLED, True))

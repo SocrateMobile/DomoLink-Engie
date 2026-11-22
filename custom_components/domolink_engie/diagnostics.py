@@ -33,8 +33,18 @@ TO_REDACT = {
     "email",
     "nom",
     "prenom",
+    "titulaire",
+    "adresse",
     "adresse_complete",
+    "code_postal",
+    "ville",
+    "ref_bp",
+    "compte_contrat",
+    "id_personne",
+    "pdl",
+    "pce",
     "idPDL",
+    "numero_serie",
     "numeroSerie",
 }
 

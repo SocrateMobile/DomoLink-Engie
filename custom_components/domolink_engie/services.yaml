@@ -2,6 +2,12 @@ import_history:
   name: Importer l'historique ENGIE
   description: Importe rétroactivement l'historique de consommation Électricité et Gaz (kWh, m³, €) dans les statistiques du Tableau de bord Énergie de Home Assistant.
   fields:
+    entry_id:
+      name: ID de l'entrée de configuration
+      description: Optionnel — cible un contrat ENGIE spécifique (par défaut, tous les contrats configurés).
+      required: false
+      selector:
+        text:
     months:
       name: Nombre de mois
       description: Profondeur de l'historique à importer (entre 1 et 36 mois).

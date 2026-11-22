@@ -2,79 +2,79 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connexion ENGIE Particuliers",
-        "description": "Connectez-vous avec les identifiants de votre Espace Client ENGIE (Électricité & Gaz). Un code de vérification (MFA) vous sera demandé une seule fois si activé sur votre compte.",
+        "title": "ENGIE Particuliers Sign-In",
+        "description": "Sign in with your ENGIE France Customer Area credentials (Electricity & Gas). A one-time MFA verification code will be requested if enabled on your account.",
         "data": {
-          "username": "Adresse e-mail ENGIE",
-          "password": "Mot de passe",
-          "import_history": "Importer automatiquement les 12 derniers mois dans le Tableau de bord Énergie"
+          "username": "ENGIE Email",
+          "password": "Password",
+          "import_history": "Automatically backfill the last 12 months into Home Assistant Energy Dashboard"
         }
       },
       "mfa_select": {
-        "title": "Vérification en 2 étapes (MFA)",
-        "description": "Choisissez comment recevoir votre code de vérification ENGIE :",
+        "title": "2-Step Verification (MFA)",
+        "description": "Select how to receive your ENGIE verification code:",
         "data": {
-          "factor_id": "Méthode de vérification"
+          "factor_id": "Verification method"
         }
       },
       "mfa_code": {
-        "title": "Saisir le code de sécurité",
-        "description": "Entrez le code reçu via {factor}. Ce code ne sera plus redemandé après la configuration.",
+        "title": "Enter Verification Code",
+        "description": "Enter the code received via {factor}. It will not be asked again after setup.",
         "data": {
-          "code": "Code de vérification (OTP)"
+          "code": "Verification code (OTP)"
         }
       },
       "contract": {
-        "title": "Sélection du logement / contrat",
-        "description": "Plusieurs comptes de contrat ENGIE ont été détectés sur votre espace client. Choisissez celui à intégrer :",
+        "title": "Select Contract Account",
+        "description": "Multiple ENGIE contract accounts were found. Select the one to integrate:",
         "data": {
-          "compte_contrat": "Compte Contrat ENGIE"
+          "compte_contrat": "ENGIE Contract Account"
         }
       },
       "reauth_confirm": {
-        "title": "Ré-authentification ENGIE requise",
-        "description": "Votre session ENGIE a expiré. Veuillez ressaisir vos identifiants pour restaurer la synchronisation.",
+        "title": "ENGIE Re-authentication Required",
+        "description": "Your ENGIE session expired. Please re-enter your credentials to restore synchronization.",
         "data": {
-          "username": "Adresse e-mail ENGIE",
-          "password": "Mot de passe"
+          "username": "ENGIE Email",
+          "password": "Password"
         }
       }
     },
     "error": {
-      "invalid_auth": "Identifiant ou mot de passe ENGIE incorrect.",
-      "invalid_mfa_code": "Code de vérification invalide ou expiré.",
-      "no_mfa_factor": "Aucun facteur MFA compatible (SMS/E-mail) trouvé sur ce compte.",
-      "cannot_connect": "Impossible de joindre les serveurs ENGIE / Okta.",
-      "unknown": "Erreur inattendue lors de l'authentification."
+      "invalid_auth": "Invalid ENGIE username or password.",
+      "invalid_mfa_code": "Invalid or expired verification code.",
+      "no_mfa_factor": "No compatible MFA factor (SMS/Email) found.",
+      "cannot_connect": "Failed to connect to ENGIE / Okta servers.",
+      "unknown": "Unexpected authentication error."
     },
     "abort": {
-      "already_configured": "Ce compte contrat ENGIE est déjà configuré.",
-      "no_contracts": "Aucun contrat actif détecté sur cet espace client ENGIE.",
-      "cannot_connect": "Échec de récupération des contrats après authentification.",
-      "reauth_successful": "Ré-authentification ENGIE réussie."
+      "already_configured": "This ENGIE contract account is already configured.",
+      "no_contracts": "No active contract found on this ENGIE account.",
+      "cannot_connect": "Failed to fetch contracts after authentication.",
+      "reauth_successful": "ENGIE re-authentication successful."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Options DomoLink ENGIE & ZLinky_TIC Temps Réel",
-        "description": "Configurez les intervalles de synchronisation ENGIE et l'association automatique ou manuelle de votre clé Zigbee ZLinky_TIC (Z2M, ZHA, deCONZ/Dresden, TIC).",
+        "title": "DomoLink ENGIE & ZLinky_TIC Real-Time Options",
+        "description": "Configure polling intervals for ENGIE servers and auto/manual mapping for your ZLinky_TIC Zigbee adapter (Z2M, ZHA, deCONZ/Dresden, TIC).",
         "data": {
-          "scan_interval": "Intervalle de mise à jour consommation & relevés (minutes)",
-          "billing_interval": "Intervalle de mise à jour facturation & mensualités (heures)",
-          "zlinky_enabled": "Activer l'intégration temps réel ZLinky_TIC / Téléinfo",
-          "zlinky_device_prefix": "Préfixe / Nom de l'appareil ZLinky_TIC (ex: zlinky_tic)",
-          "zlinky_power_sensor": "Capteur Puissance apparente (SINSTS / PAPP — VA/W)",
-          "zlinky_current_sensor": "Capteur Intensité efficace (IRMS1 / IINST — A)",
-          "zlinky_voltage_sensor": "Capteur Tension efficace (URMS1 — V)",
-          "zlinky_index_total_sensor": "Capteur Index Total (EAST / BASE — kWh/Wh)",
-          "zlinky_index_hc_sensor": "Capteur Index Heures Creuses (EASF01 / HCHC — kWh/Wh)",
-          "zlinky_index_hp_sensor": "Capteur Index Heures Pleines (EASF02 / HCHP — kWh/Wh)",
-          "zlinky_ptec_sensor": "Capteur Période tarifaire en cours (PTEC / LTARF)",
-          "zlinky_max_power_sensor": "Capteur Puissance max du jour (SMAXSN / PMAX — VA)",
-          "zlinky_pref_sensor": "Capteur Puissance souscrite (PREF / ISOUSC — kVA/A)",
-          "zlinky_daily_energy_sensor": "Capteur Énergie quotidienne (Optionnel — kWh/Wh)",
-          "zlinky_demain_sensor": "Capteur Couleur Tempo Demain (DEMAIN — Optionnel)"
+          "scan_interval": "Consumption & meter update interval (minutes)",
+          "billing_interval": "Billing & installment update interval (hours)",
+          "zlinky_enabled": "Enable ZLinky_TIC / Teleinfo real-time integration",
+          "zlinky_device_prefix": "ZLinky_TIC Device Prefix / Name (e.g., zlinky_tic)",
+          "zlinky_power_sensor": "Apparent Power Sensor (SINSTS / PAPP — VA/W)",
+          "zlinky_current_sensor": "RMS Current Sensor (IRMS1 / IINST — A)",
+          "zlinky_voltage_sensor": "RMS Voltage Sensor (URMS1 — V)",
+          "zlinky_index_total_sensor": "Total Energy Index Sensor (EAST / BASE — kWh/Wh)",
+          "zlinky_index_hc_sensor": "Off-Peak Index Sensor (EASF01 / HCHC — kWh/Wh)",
+          "zlinky_index_hp_sensor": "Peak Index Sensor (EASF02 / HCHP — kWh/Wh)",
+          "zlinky_ptec_sensor": "Active Tariff Period Sensor (PTEC / LTARF)",
+          "zlinky_max_power_sensor": "Daily Max Power Sensor (SMAXSN / PMAX — VA)",
+          "zlinky_pref_sensor": "Subscribed Power Sensor (PREF / ISOUSC — kVA/A)",
+          "zlinky_daily_energy_sensor": "Daily Energy Sensor (Optional — kWh/Wh)",
+          "zlinky_demain_sensor": "Tomorrow Tempo Color Sensor (DEMAIN — Optional)"
         }
       }
     }

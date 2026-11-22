@@ -1,6 +1,6 @@
 /**
  * DomoLink ENGIE — Custom Lovelace Card & Visual Editor + Moniteur Énergie (DomoLink26.IO Engine + ZLinky_TIC Live)
- * Version: 1.3.0
+ * Version: 1.3.2
  */
 
 (function () {
@@ -19,7 +19,8 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function num(v, fallback = 0) {
@@ -63,18 +64,20 @@
     return ZLINKY_TOKEN_RE.test(String(str || ""));
   }
 
-  // Live 24h Recorder history cache so Courbe de Charge (24h) and Conso Aujourd'hui reflect real HA live telemetry
-  const _liveHistoryCache = {
-    key: "",
-    ts: 0,
-    loading: false,
-    hourlyKwh: null,
-    todayFromPowerKwh: null,
-    todayHcFromPowerKwh: null,
-    todayDeltaTotalKwh: null,
-    todayDeltaHcKwh: null,
-    listeners: new Set(),
-  };
+  // Per-instance 24h Recorder history cache so Courbe de Charge (24h) and Conso Aujourd'hui reflect real HA live telemetry
+  function createLiveHistoryCache() {
+    return {
+      key: "",
+      ts: 0,
+      loading: false,
+      hourlyKwh: null,
+      todayFromPowerKwh: null,
+      todayHcFromPowerKwh: null,
+      todayDeltaTotalKwh: null,
+      todayDeltaHcKwh: null,
+      listeners: new Set(),
+    };
+  }
 
   function _parseHistPoint(pt) {
     if (!pt) return null;
@@ -90,11 +93,12 @@
     return { val, tsMs };
   }
 
-  function ensureLive24hHistory(hass, companions, onReady) {
+  function ensureLive24hHistory(hass, companions, onReady, liveCache) {
+    const cache = liveCache || createLiveHistoryCache();
     if (typeof onReady === "function") {
-      _liveHistoryCache.listeners.add(onReady);
+      cache.listeners.add(onReady);
     }
-    if (!hass || typeof hass.callWS !== "function" || !companions) return _liveHistoryCache;
+    if (!hass || typeof hass.callWS !== "function" || !companions) return cache;
 
     const eids = [
       companions.powerSensor,
@@ -104,16 +108,16 @@
       companions.indexHpSensor,
     ].filter(Boolean);
 
-    if (!eids.length) return _liveHistoryCache;
+    if (!eids.length) return cache;
 
     const now = new Date();
     const key = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}|${eids.join(",")}`;
-    if (_liveHistoryCache.loading) return _liveHistoryCache;
-    if (_liveHistoryCache.key === key && Date.now() - _liveHistoryCache.ts < 60000 && _liveHistoryCache.hourlyKwh) {
-      return _liveHistoryCache;
+    if (cache.loading) return cache;
+    if (cache.key === key && Date.now() - cache.ts < 60000 && cache.hourlyKwh) {
+      return cache;
     }
 
-    _liveHistoryCache.loading = true;
+    cache.loading = true;
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const startMs = startOfDay.getTime();
     const nowMs = now.getTime();
@@ -226,19 +230,19 @@
             ? totInfo.buckets
             : null;
 
-        _liveHistoryCache.key = key;
-        _liveHistoryCache.ts = Date.now();
-        _liveHistoryCache.hourlyKwh = bestHourly;
-        _liveHistoryCache.todayFromPowerKwh = todayFromPower > 0 ? Number(todayFromPower.toFixed(2)) : null;
-        _liveHistoryCache.todayHcFromPowerKwh = todayFromPower > 0 ? Number(todayHcFromPower.toFixed(2)) : null;
-        _liveHistoryCache.todayDeltaTotalKwh = deltaTotal !== null && deltaTotal > 0 && deltaTotal <= 150 ? deltaTotal : null;
-        _liveHistoryCache.todayDeltaHcKwh = hcInfo && hcInfo.totalDelta >= 0 && hcInfo.totalDelta <= 120 ? hcInfo.totalDelta : null;
+        cache.key = key;
+        cache.ts = Date.now();
+        cache.hourlyKwh = bestHourly;
+        cache.todayFromPowerKwh = todayFromPower > 0 ? Number(todayFromPower.toFixed(2)) : null;
+        cache.todayHcFromPowerKwh = todayFromPower > 0 ? Number(todayHcFromPower.toFixed(2)) : null;
+        cache.todayDeltaTotalKwh = deltaTotal !== null && deltaTotal > 0 && deltaTotal <= 150 ? deltaTotal : null;
+        cache.todayDeltaHcKwh = hcInfo && hcInfo.totalDelta >= 0 && hcInfo.totalDelta <= 120 ? hcInfo.totalDelta : null;
       })
       .catch(() => {})
       .finally(() => {
-        _liveHistoryCache.loading = false;
-        const cbs = Array.from(_liveHistoryCache.listeners);
-        _liveHistoryCache.listeners.clear();
+        cache.loading = false;
+        const cbs = Array.from(cache.listeners);
+        cache.listeners.clear();
         cbs.forEach((cb) => {
           try {
             cb();
@@ -246,7 +250,7 @@
         });
       });
 
-    return _liveHistoryCache;
+    return cache;
   }
 
   /**
@@ -617,9 +621,9 @@
     };
   }
 
-  function buildMoniteurDataset(account, hass, config = {}, onHistoryReady = null) {
+  function buildMoniteurDataset(account, hass, config = {}, onHistoryReady = null, liveCache = null) {
     const companions = autoDetectCompanionSensors(hass, config, account);
-    const liveHist = ensureLive24hHistory(hass, companions, onHistoryReady);
+    const liveHist = ensureLive24hHistory(hass, companions, onHistoryReady, liveCache);
     const states = (hass && hass.states) || {};
     const zSnapLive = (account.zlinky && account.zlinky.live) || {};
     const now = new Date();
@@ -640,7 +644,7 @@
     const elecAvgPrice = evMonthKwh > 0 && evMonthEuro > 0 ? evMonthEuro / evMonthKwh : 0.21;
 
     // Reference daily average: ev.month_kwh from ENGIE getConsumptionVariation is a full ~30-day month
-    const refDailyAvg = evMonthKwh > 0 ? evMonthKwh / 30 : elecYearKwh > 0 ? elecYearKwh / 365 : 10.9;
+    const refDailyAvg = evMonthKwh > 0 ? evMonthKwh / 30 : elecYearKwh > 0 ? elecYearKwh / 365 : null;
 
     // 1. Live ZLinky_TIC / Subscribed Power (PREF / ISOUSC)
     let maxKva = parseFloat(String((account.elec_contract && account.elec_contract.puissance) || "6").replace(/[^\d.]/g, "")) || 6;
@@ -656,7 +660,7 @@
     const maxVA = maxKva * 1000;
 
     // 2. Live ZLinky_TIC Apparent Power (SINSTS / PAPP)
-    let powerVA = Math.round((refDailyAvg * 1000) / 24);
+    let powerVA = refDailyAvg !== null ? Math.round((refDailyAvg * 1000) / 24) : null;
     let powerIsLive = false;
     const pRead = readLiveSensorValue(states, companions.powerSensor);
     if (pRead.val !== null) {
@@ -709,9 +713,9 @@
 
     // 4. Today Energy (kWh) & Today HC (kWh):
     // Priority: 1) dailyEnergySensor, 2) Midnight-to-now HA history delta, 3) Power history integration, 4) Reference daily avg
-    let todayKwh = Number(refDailyAvg.toFixed(1));
+    let todayKwh = refDailyAvg !== null ? Number(refDailyAvg.toFixed(1)) : null;
     let todayIsLive = false;
-    let todayHcKwh = Number((todayKwh * 0.4).toFixed(1));
+    let todayHcKwh = todayKwh !== null ? Number((todayKwh * 0.4).toFixed(1)) : null;
 
     const dRead = readLiveSensorValue(states, companions.dailyEnergySensor);
     if (dRead.val !== null && dRead.val > 0) {
@@ -723,11 +727,12 @@
     } else if (liveHist.todayFromPowerKwh !== null && liveHist.todayFromPowerKwh > 0) {
       todayKwh = liveHist.todayFromPowerKwh;
       todayIsLive = true;
-    } else if (powerIsLive && powerVA > 0) {
-      // Live power sensor available before WS history resolves: estimate elapsed today consumption from live power & ref avg
+    } else if (powerIsLive && powerVA !== null && powerVA > 0) {
+      // Live power sensor available before WS history resolves: estimate elapsed today consumption from live power
       const elapsedHours = Math.max(1, now.getHours() + now.getMinutes() / 60);
       const liveHourlyKwh = powerVA / 1000;
-      todayKwh = Number((((liveHourlyKwh * 0.65) + ((refDailyAvg / 24) * 0.35)) * elapsedHours).toFixed(1));
+      const baseHourly = refDailyAvg !== null ? refDailyAvg / 24 : liveHourlyKwh;
+      todayKwh = Number((((liveHourlyKwh * 0.65) + (baseHourly * 0.35)) * elapsedHours).toFixed(1));
       todayIsLive = true;
     }
 
@@ -735,7 +740,7 @@
       todayHcKwh = liveHist.todayDeltaHcKwh;
     } else if (liveHist.todayHcFromPowerKwh !== null && liveHist.todayHcFromPowerKwh >= 0) {
       todayHcKwh = liveHist.todayHcFromPowerKwh;
-    } else {
+    } else if (todayKwh !== null) {
       todayHcKwh = Number((todayKwh * 0.4).toFixed(1));
     }
 
@@ -748,34 +753,32 @@
       const curMonthDays = account.elec_daily.filter((d) => String(d.date || d.valeurDate || "").startsWith(currentYm));
       if (curMonthDays.length > 0) {
         const sumDays = curMonthDays.reduce((acc, d) => acc + num(d.kwh ?? d.curr ?? d.conso, 0), 0);
-        elecMonthKwh = Math.round(sumDays + (todayIsLive ? todayKwh : 0));
+        elecMonthKwh = Math.round(sumDays + (todayIsLive && todayKwh !== null ? todayKwh : 0));
       }
     }
-    if (elecMonthKwh <= 0) {
+    if (elecMonthKwh <= 0 && refDailyAvg !== null) {
       // Estimate current month-to-date from completed days of current month + todayKwh
-      elecMonthKwh = Math.round(refDailyAvg * Math.max(0, dayOfMonth - 1) + todayKwh);
+      elecMonthKwh = Math.round(refDailyAvg * Math.max(0, dayOfMonth - 1) + (todayKwh || 0));
     }
     const elecMonthEuro = Math.round(elecMonthKwh * elecAvgPrice * 100) / 100;
-    const elecDailyAvg = elecMonthKwh > 0 ? elecMonthKwh / dayOfMonth : refDailyAvg;
-    const elecForecastMonth = elecMonthKwh > 0 ? Math.round((elecMonthKwh / dayOfMonth) * daysInMonth) : 301;
+    const elecForecastMonth = elecMonthKwh > 0 ? Math.round((elecMonthKwh / dayOfMonth) * daysInMonth) : null;
 
-    const todayCost = todayKwh * elecAvgPrice;
+    const todayCost = todayKwh !== null ? todayKwh * elecAvgPrice : null;
     const zlinkyActive = Boolean(
       powerIsLive || currentA !== null || voltageV !== null || idxTotalKwh !== null || ptecLabel
     );
 
     // 6. 24h Hourly Load Curve:
-    // Priority: 1) Live HA Recorder 24h history of powerSensor / indexSensor, 2) ENGIE elec_hourly, 3) Normalized profile up to currentHour
+    // Priority: 1) Live HA Recorder 24h history of powerSensor / indexSensor, 2) ENGIE elec_hourly, 3) Calibrated profile if todayKwh > 0
     const currentHour = now.getHours();
     const realHourly = Array.isArray(account.elec_hourly) ? account.elec_hourly : [];
     const hourlyPoints = [];
-    let hourlyIsLiveHistory = false;
+    let hourlyIsEstimated = false;
 
     if (Array.isArray(liveHist.hourlyKwh) && liveHist.hourlyKwh.length === 24) {
-      hourlyIsLiveHistory = true;
       for (let h = 0; h < 24; h++) {
         let kwh = h <= currentHour ? num(liveHist.hourlyKwh[h], 0) : 0;
-        if (h === currentHour && powerIsLive && powerVA > 0 && kwh <= 0) {
+        if (h === currentHour && powerIsLive && powerVA !== null && powerVA > 0 && kwh <= 0) {
           kwh = Number((powerVA / 1000).toFixed(2));
         }
         const euro = Number((kwh * (isHcHour(h) ? elecAvgPrice * 0.78 : elecAvgPrice * 1.12)).toFixed(3));
@@ -801,7 +804,8 @@
           isHc: isHcHour(h),
         });
       }
-    } else {
+    } else if (todayKwh !== null && todayKwh > 0) {
+      hourlyIsEstimated = true;
       let activeProfileSum = 0;
       for (let h = 0; h <= currentHour; h++) activeProfileSum += HOURLY_PROFILE[h];
       const normActive = activeProfileSum > 0 ? 1 / activeProfileSum : 1;
@@ -809,7 +813,7 @@
       for (let h = 0; h < 24; h++) {
         const active = h <= currentHour;
         let kwh = active ? Number((todayKwh * HOURLY_PROFILE[h] * normActive).toFixed(2)) : 0;
-        if (h === currentHour && powerIsLive && powerVA > 0) {
+        if (h === currentHour && powerIsLive && powerVA !== null && powerVA > 0) {
           kwh = Number((powerVA / 1000).toFixed(2));
         }
         const euro = Number((kwh * (isHcHour(h) ? elecAvgPrice * 0.78 : elecAvgPrice * 1.12)).toFixed(3));
@@ -832,15 +836,21 @@
 
     const buildDaily14 = (realDaily, baseKwh, varPct) => {
       if (Array.isArray(realDaily) && realDaily.length >= 5) {
-        return realDaily.slice(-14).map((d) => {
-          const c = num(d.kwh ?? d.curr ?? d.conso ?? d.value, 0);
-          const p = num(d.prev ?? d.kwh_prev ?? d.consoN1 ?? d.consoAnneePrecedente, Number((c * 1.05).toFixed(1)));
-          return {
-            label: formatShortDate(d.label || d.valeurDate || d.dateDebut || d.date || ""),
-            curr: c,
-            prev: p,
-          };
-        });
+        return {
+          isEstimated: false,
+          points: realDaily.slice(-14).map((d) => {
+            const c = num(d.kwh ?? d.curr ?? d.conso ?? d.value, 0);
+            const p = num(d.prev ?? d.kwh_prev ?? d.consoN1 ?? d.consoAnneePrecedente, Number((c * 1.05).toFixed(1)));
+            return {
+              label: formatShortDate(d.label || d.valeurDate || d.dateDebut || d.date || ""),
+              curr: c,
+              prev: p,
+            };
+          }),
+        };
+      }
+      if (baseKwh === null || !Number.isFinite(baseKwh) || baseKwh <= 0) {
+        return { isEstimated: false, points: [] };
       }
       const pts = [];
       const ratioPrev = 1 - num(varPct, 0) / 100;
@@ -854,55 +864,64 @@
         const p = Number((c * safePrevRatio * (0.95 + ((i * 7) % 10) / 100)).toFixed(1));
         pts.push({ label: lbl, curr: c, prev: p });
       }
-      return pts;
+      return { isEstimated: true, points: pts };
     };
 
-    const elecDailyAvgEffective = elecMonthKwh > 0 ? elecMonthKwh / dayOfMonth : 14.5;
+    const elecDailyAvgEffective = elecMonthKwh > 0 ? elecMonthKwh / dayOfMonth : refDailyAvg;
     const gazMonthKwh = num(gv.month_kwh, 0);
     const gazMonthEuro = num(gv.month_euro, 0);
     const gazYearKwh = num(gv.year_kwh, 0);
     const gazYearPrevKwh = num(gv.year_prev_kwh, 0);
-    const gazDailyAvg = gazMonthKwh > 0 ? gazMonthKwh / dayOfMonth : 31.9;
+    const gazDailyAvg = gazMonthKwh > 0 ? gazMonthKwh / dayOfMonth : (gazYearKwh > 0 ? gazYearKwh / 365 : null);
     const gazAvgPrice = gazMonthKwh > 0 && gazMonthEuro > 0 ? gazMonthEuro / gazMonthKwh : 0.11;
     const gazCoeff = num(account.gaz_releve && account.gaz_releve.coeff, 11.2);
-    const gazM3 = Number((gazDailyAvg / gazCoeff).toFixed(1));
+    const gazM3 = gazDailyAvg !== null ? Number((gazDailyAvg / gazCoeff).toFixed(1)) : null;
 
-    const elecDaily14 = buildDaily14(account.elec_daily, elecDailyAvgEffective, ev.month_variation_pct);
-    const gazDaily14 = buildDaily14(account.gaz_daily, gazDailyAvg, gv.month_variation_pct);
+    const elecDailyRes = buildDaily14(account.elec_daily, elecDailyAvgEffective, ev.month_variation_pct);
+    const gazDailyRes = buildDaily14(account.gaz_daily, gazDailyAvg, gv.month_variation_pct);
 
     // 7. 12-month Monthly Elec & Gaz
     const buildMonthly12 = (realMonthly, seasonal, yearN, yearN1, curMonthVal) => {
       if (Array.isArray(realMonthly) && realMonthly.length >= 6) {
-        return realMonthly.slice(0, 12).map((m, idx) => {
-          const c = num(m.curr ?? m.kwh ?? m.conso, 0);
-          const p = num(m.prev ?? m.kwh_prev ?? m.consoN1 ?? m.consoAnneePrecedente, Math.round(c * 1.04));
-          return {
-            label: m.label || MONTHS_FR[idx] || `M${idx + 1}`,
-            curr: c,
-            prev: p,
-          };
-        });
+        return {
+          isEstimated: false,
+          points: realMonthly.slice(0, 12).map((m, idx) => {
+            const c = num(m.curr ?? m.kwh ?? m.conso, 0);
+            const p = num(m.prev ?? m.kwh_prev ?? m.consoN1 ?? m.consoAnneePrecedente, Math.round(c * 1.04));
+            return {
+              label: m.label || MONTHS_FR[idx] || `M${idx + 1}`,
+              curr: c,
+              prev: p,
+            };
+          }),
+        };
       }
-      const nTotal = yearN > 0 ? yearN : 4200;
+      if (yearN <= 0 && yearN1 <= 0 && curMonthVal <= 0) {
+        return { isEstimated: false, points: [] };
+      }
+      const nTotal = yearN > 0 ? yearN : curMonthVal * 12;
       const n1Total = yearN1 > 0 ? yearN1 : Math.round(nTotal * 1.04);
       let activeSum = 0;
       for (let i = 0; i <= currentMonthIdx; i++) activeSum += seasonal[i];
       const normFactor = activeSum > 0 ? 1 / activeSum : 1;
 
-      return MONTHS_FR.map((lbl, idx) => {
-        const prev = Math.round(n1Total * seasonal[idx]);
-        let curr = 0;
-        if (idx < currentMonthIdx) {
-          curr = Math.round(nTotal * seasonal[idx] * normFactor * 0.88);
-        } else if (idx === currentMonthIdx) {
-          curr = curMonthVal > 0 ? Math.round(curMonthVal) : Math.round(nTotal * seasonal[idx] * normFactor * 0.88);
-        }
-        return { label: lbl, curr, prev };
-      });
+      return {
+        isEstimated: true,
+        points: MONTHS_FR.map((lbl, idx) => {
+          const prev = Math.round(n1Total * seasonal[idx]);
+          let curr = 0;
+          if (idx < currentMonthIdx) {
+            curr = Math.round(nTotal * seasonal[idx] * normFactor * 0.88);
+          } else if (idx === currentMonthIdx) {
+            curr = curMonthVal > 0 ? Math.round(curMonthVal) : Math.round(nTotal * seasonal[idx] * normFactor * 0.88);
+          }
+          return { label: lbl, curr, prev };
+        }),
+      };
     };
 
-    const elecMonthly12 = buildMonthly12(account.elec_monthly, ELEC_SEASONAL, elecYearKwh, elecYearPrevKwh, elecMonthKwh);
-    const gazMonthly12 = buildMonthly12(account.gaz_monthly, GAZ_SEASONAL, gazYearKwh, gazYearPrevKwh, gazMonthKwh);
+    const elecMonthlyRes = buildMonthly12(account.elec_monthly, ELEC_SEASONAL, elecYearKwh, elecYearPrevKwh, elecMonthKwh);
+    const gazMonthlyRes = buildMonthly12(account.gaz_monthly, GAZ_SEASONAL, gazYearKwh, gazYearPrevKwh, gazMonthKwh);
 
     // 8. Tempo detection
     let tempoToday = null;
@@ -918,19 +937,16 @@
       tempoTomorrow = String(zSnapLive.demain).toUpperCase();
     }
 
-    const isCalibrated = !(Array.isArray(account.elec_daily) && account.elec_daily.length >= 5) && !zlinkyActive;
-
     return {
       currentYear,
       prevYear: currentYear - 1,
       companions,
-      isCalibrated,
       zlinkyActive,
       elec: {
         powerVA,
         maxVA,
         maxKva,
-        powerPct: Math.min(100, Math.round((powerVA / Math.max(100, maxVA)) * 100)),
+        powerPct: powerVA !== null ? Math.min(100, Math.round((powerVA / Math.max(100, maxVA)) * 100)) : 0,
         powerIsLive,
         currentA,
         voltageV,
@@ -943,22 +959,25 @@
         todayIsLive,
         todayHcKwh,
         todayCost,
-        avgHourlyCost: todayCost / 24,
+        avgHourlyCost: todayCost !== null ? todayCost / 24 : null,
         monthKwh: elecMonthKwh,
         monthEuro: elecMonthEuro,
         forecastMonth: elecForecastMonth,
         yearKwh: elecYearKwh,
         yearPrevKwh: elecYearPrevKwh,
         hourlyPoints,
-        daily14: elecDaily14,
-        monthly12: elecMonthly12,
+        hourlyIsEstimated,
+        daily14: elecDailyRes.points,
+        dailyIsEstimated: elecDailyRes.isEstimated,
+        monthly12: elecMonthlyRes.points,
+        monthlyIsEstimated: elecMonthlyRes.isEstimated,
         isHcNow,
         tarifType: ptecLabel || (account.elec_contract && account.elec_contract.typeComptage) || "Heures Pleines / Creuses",
         tempoToday,
         tempoTomorrow,
       },
       gaz: {
-        lastDayKwh: Number(gazDailyAvg.toFixed(1)),
+        lastDayKwh: gazDailyAvg !== null ? Number(gazDailyAvg.toFixed(1)) : null,
         lastDate: (account.gaz_releve && (account.gaz_releve.latest_date || account.gaz_releve.dateDernierIndex)) || `${String(dayOfMonth).padStart(2, "0")}/${String(currentMonthIdx + 1).padStart(2, "0")}`,
         monthKwh: gazMonthKwh,
         monthEuro: gazMonthEuro > 0 ? gazMonthEuro : Math.round(gazMonthKwh * gazAvgPrice),
@@ -967,8 +986,10 @@
         coeff: gazCoeff,
         yearKwh: gazYearKwh,
         yearPrevKwh: gazYearPrevKwh,
-        daily14: gazDaily14,
-        monthly12: gazMonthly12,
+        daily14: gazDailyRes.points,
+        dailyIsEstimated: gazDailyRes.isEstimated,
+        monthly12: gazMonthlyRes.points,
+        monthlyIsEstimated: gazMonthlyRes.isEstimated,
       },
     };
   }
@@ -1072,13 +1093,13 @@
       const fill = p.isHc ? "#3b82f6" : "#64748b";
       if (bh > 0.5) {
         bars += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${fill}" opacity="0.9">
-          <title>${p.label} — ${fmt(p.kwh, 2)} kWh (${fmt(p.euro, 3)} €) • ${p.isHc ? "Heures Creuses" : "Heures Pleines"}</title>
+          <title>${esc(p.label)} — ${fmt(p.kwh, 2)} kWh (${fmt(p.euro, 3)} €) • ${p.isHc ? "Heures Creuses" : "Heures Pleines"}</title>
         </rect>`;
       }
       const ly = padT + chartH - (p.euro / maxEuro) * chartH;
       linePts.push({ x: cx, y: ly });
       if (idx % 4 === 0) {
-        bars += `<text x="${cx.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#64748b" font-size="10">${p.label}</text>`;
+        bars += `<text x="${cx.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#64748b" font-size="10">${esc(p.label)}</text>`;
       }
     });
 
@@ -1132,13 +1153,13 @@
       // Left bar: Previous Year / N-1 (2025)
       if (hPrev > 0.5) {
         bars += `<rect x="${xLeft.toFixed(1)}" y="${(padT + chartH - hPrev).toFixed(1)}" width="${barW.toFixed(1)}" height="${hPrev.toFixed(1)}" rx="3" fill="${prevColor}" opacity="0.88">
-          <title>${p.label} — ${prevLabel}: ${fmt(p.prev, 1)} kWh | ${currLabel}: ${fmt(p.curr, 1)} kWh</title>
+          <title>${esc(p.label)} — ${esc(prevLabel)}: ${fmt(p.prev, 1)} kWh | ${esc(currLabel)}: ${fmt(p.curr, 1)} kWh</title>
         </rect>`;
       }
       // Right bar: Current Period / N (2026)
       if (hCurr > 0.5) {
         bars += `<rect x="${xRight.toFixed(1)}" y="${(padT + chartH - hCurr).toFixed(1)}" width="${barW.toFixed(1)}" height="${hCurr.toFixed(1)}" rx="3" fill="${currColor}">
-          <title>${p.label} — ${prevLabel}: ${fmt(p.prev, 1)} kWh | ${currLabel}: ${fmt(p.curr, 1)} kWh</title>
+          <title>${esc(p.label)} — ${esc(prevLabel)}: ${fmt(p.prev, 1)} kWh | ${esc(currLabel)}: ${fmt(p.curr, 1)} kWh</title>
         </rect>`;
       }
       bars += `<text x="${cx.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#64748b" font-size="10">${esc(p.label)}</text>`;
@@ -1291,8 +1312,8 @@
     .dlm-tempo-val { font-size: 13px; font-weight: 800; display: flex; align-items: center; gap: 6px; }
   `;
 
-  function renderMoniteurHTML(account, hass, state, config = {}, onHistoryReady = null) {
-    const data = buildMoniteurDataset(account, hass, config, onHistoryReady);
+  function renderMoniteurHTML(account, hass, state, config = {}, onHistoryReady = null, liveCache = null) {
+    const data = buildMoniteurDataset(account, hass, config, onHistoryReady, liveCache);
     const activeTab = state.tab || "linky"; // linky | elec | gas
     const period = activeTab === "linky" ? "hourly" : (state.period === "monthly" ? "monthly" : "daily");
 
@@ -1310,10 +1331,20 @@
       : `<button class="dlm-period-btn ${period === "daily" ? "active" : ""}" data-dlm-period="daily" title="14 derniers jours">📅 Jour</button>
          <button class="dlm-period-btn ${period === "monthly" ? "active" : ""}" data-dlm-period="monthly" title="12 mois (N vs N-1)">📆 Mois</button>`;
 
-    const banner = data.isCalibrated
+    const activeChartEstimated =
+      activeTab === "linky"
+        ? data.elec.hourlyIsEstimated
+        : activeTab === "elec"
+        ? (period === "monthly" ? data.elec.monthlyIsEstimated : data.elec.dailyIsEstimated)
+        : (period === "monthly" ? data.gaz.monthlyIsEstimated : data.gaz.dailyIsEstimated);
+
+    const estBadge = `<span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;background:rgba(245,158,11,0.16);color:#fbbf24;border:1px solid rgba(245,158,11,0.35);vertical-align:middle;">Estimé</span>`;
+    const emptyChartHTML = `<div style="padding:36px 16px;text-align:center;color:#94a3b8;font-size:13px;">Données historiques non encore disponibles</div>`;
+
+    const banner = activeChartEstimated
       ? `<div class="dlm-banner info">
            <span>ℹ️</span>
-           <span>Profil horaire/saisonnier calibré sur vos totaux ENGIE réels (${isGaz ? `${fmtInt(data.gaz.yearKwh)} kWh N / ${fmtInt(data.gaz.yearPrevKwh)} kWh N-1` : `${fmtInt(data.elec.yearKwh)} kWh N / ${fmtInt(data.elec.yearPrevKwh)} kWh N-1`}).</span>
+           <span>Profil horaire/saisonnier estimé à partir de vos totaux ENGIE réels (${isGaz ? `${fmtInt(data.gaz.yearKwh)} kWh N / ${fmtInt(data.gaz.yearPrevKwh)} kWh N-1` : `${fmtInt(data.elec.yearKwh)} kWh N / ${fmtInt(data.elec.yearPrevKwh)} kWh N-1`}).</span>
          </div>`
       : "";
 
@@ -1366,9 +1397,9 @@
           </div>
         </div>
         <div class="dlm-chart-card">
-          <div class="dlm-chart-title">Courbe de Charge (24h)</div>
+          <div class="dlm-chart-title">Courbe de Charge (24h)${e.hourlyPoints.length && e.hourlyIsEstimated ? estBadge : ""}</div>
           <div class="dlm-chart-sub">Puissance horaire kWh (Bleu HC / Gris HP) et coût estimé (€)</div>
-          ${renderLoadCurve24hSVG(e.hourlyPoints)}
+          ${e.hourlyPoints.length ? renderLoadCurve24hSVG(e.hourlyPoints) : emptyChartHTML}
         </div>
       `;
     } else if (activeTab === "elec") {
@@ -1454,9 +1485,9 @@
           </div>
         </div>
         <div class="dlm-chart-card">
-          <div class="dlm-chart-title">Historique Consommation</div>
+          <div class="dlm-chart-title">Historique Consommation${chartPoints.length && (period === "monthly" ? e.monthlyIsEstimated : e.dailyIsEstimated) ? estBadge : ""}</div>
           <div class="dlm-chart-sub">${period === "monthly" ? "Comparaison mensuelle ENGIE / Linky (Année N vs N-1)" : "Comparaison des relevés quotidiens (14 derniers jours)"}</div>
-          ${chartSvg}
+          ${chartPoints.length ? chartSvg : emptyChartHTML}
         </div>
         ${footerTempo}
       `;
@@ -1504,9 +1535,9 @@
           </div>
         </div>
         <div class="dlm-chart-card">
-          <div class="dlm-chart-title">Historique Consommation Gaz</div>
+          <div class="dlm-chart-title">Historique Consommation Gaz${chartPoints.length && (period === "monthly" ? g.monthlyIsEstimated : g.dailyIsEstimated) ? estBadge : ""}</div>
           <div class="dlm-chart-sub">${period === "monthly" ? "Comparaison mensuelle Gazpar (Année N vs N-1)" : "Comparaison quotidienne Gazpar (14 derniers jours)"}</div>
-          ${chartSvg}
+          ${chartPoints.length ? chartSvg : emptyChartHTML}
         </div>
       `;
     }
@@ -1550,6 +1581,7 @@
     renderMoniteurHTML,
     extractAccountFromHass,
     autoDetectCompanionSensors,
+    createLiveHistoryCache,
   };
 
   class DomoLinkEngieCard extends HTMLElement {
@@ -1560,6 +1592,8 @@
       this._hass = null;
       this._snapshotAcc = null;
       this._lastWsFetch = 0;
+      this._lastHassSig = "";
+      this._liveHistoryCache = createLiveHistoryCache();
       this._moniteurState = { tab: "linky", period: "daily", lockTabs: false };
     }
 
@@ -1589,6 +1623,19 @@
       this._render();
     }
 
+    _computeHassSig(hass) {
+      const states = (hass && hass.states) || {};
+      const parts = [this._moniteurState.tab, this._moniteurState.period, this._snapshotAcc ? this._snapshotAcc.last_sync_utc || "1" : "0"];
+      const keys = Object.keys(states);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (k.startsWith("sensor.engie_") || hasZlinkyToken(k)) {
+          parts.push(`${k}=${states[k].state}`);
+        }
+      }
+      return parts.join("|");
+    }
+
     set hass(hass) {
       this._hass = hass;
       const now = Date.now();
@@ -1600,11 +1647,16 @@
             const accs = (res && res.accounts) || [];
             const cc = this._config.compte_contrat;
             this._snapshotAcc = (cc && accs.find((a) => a.compte_contrat === cc)) || accs[0] || null;
+            this._lastHassSig = this._computeHassSig(this._hass);
             this._render();
           })
           .catch(() => {});
       }
-      this._render();
+      const sig = this._computeHassSig(hass);
+      if (sig !== this._lastHassSig) {
+        this._lastHassSig = sig;
+        this._render();
+      }
     }
 
     getCardSize() {
@@ -1660,7 +1712,7 @@
 
       if (mode.startsWith("moniteur_")) {
         const account = extractAccountFromHass(this._hass, this._config, this._snapshotAcc);
-        this.shadowRoot.innerHTML = `<ha-card style="background:transparent;border:0;box-shadow:none;">${renderMoniteurHTML(account, this._hass, this._moniteurState, this._config, () => this._render())}</ha-card>`;
+        this.shadowRoot.innerHTML = `<ha-card style="background:transparent;border:0;box-shadow:none;">${renderMoniteurHTML(account, this._hass, this._moniteurState, this._config, () => this._render(), this._liveHistoryCache)}</ha-card>`;
         this.shadowRoot.querySelectorAll("[data-dlm-tab]").forEach((btn) => {
           btn.addEventListener("click", () => {
             this._moniteurState.tab = btn.dataset.dlmTab;

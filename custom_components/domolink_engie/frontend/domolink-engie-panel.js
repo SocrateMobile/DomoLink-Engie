@@ -1,7 +1,7 @@
 /**
  * DomoLink ENGIE — Home Assistant Sidebar Panel (with ZLinky_TIC Auto-Detection & Live Telemetry)
  * Element: <domolink-engie-panel>
- * Version: 1.3.0
+ * Version: 1.3.2
  */
 
 import "./domolink-engie-card.js";
@@ -13,7 +13,8 @@ function esc(v) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function fmt(val, d = 2) {
@@ -36,6 +37,7 @@ class DomoLinkEngiePanel extends HTMLElement {
     this._loading = false;
     this._toast = "";
     this._moniteurState = { tab: "linky", period: "daily", lockTabs: false };
+    this._liveHistoryCache = null;
     this._cardGen = {
       kind: "custom",
       title: "Moniteur Énergie",
@@ -51,6 +53,17 @@ class DomoLinkEngiePanel extends HTMLElement {
       show_usages: true,
       show_billing: true,
     };
+  }
+
+  get _isAdmin() {
+    return Boolean(this._hass && this._hass.user && this._hass.user.is_admin);
+  }
+
+  _getLiveCache() {
+    if (!this._liveHistoryCache && window.DomoLinkEngieMoniteur?.createLiveHistoryCache) {
+      this._liveHistoryCache = window.DomoLinkEngieMoniteur.createLiveHistoryCache();
+    }
+    return this._liveHistoryCache;
   }
 
   set hass(hass) {
@@ -79,7 +92,8 @@ class DomoLinkEngiePanel extends HTMLElement {
       this._hass,
       this._moniteurState,
       {},
-      () => this._renderMoniteurInPlace()
+      () => this._renderMoniteurInPlace(),
+      this._getLiveCache()
     );
     host.querySelectorAll("[data-dlm-tab]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -273,15 +287,20 @@ class DomoLinkEngiePanel extends HTMLElement {
     const renderList = (title, items) => `
       <div class="card">
         <div class="card-top"><span class="kicker">${esc(title)}</span></div>
-        ${items.length ? items.map((it) => `
+        ${items.length ? items.map((it) => {
+          const safeColor = /^[0-9a-fA-F]{3,8}$/.test(String(it.couleur || "")) ? String(it.couleur) : "38bdf8";
+          const safeWidth = Math.max(0, Math.min(100, Number(it.valeur) || 0));
+          return `
           <div class="bar-row">
             <div class="bar-label"><span>${esc(it.libelle)}</span><b>${fmt(it.valeur, 0)}%</b></div>
-            <div class="bar-track"><div class="bar-fill" style="width:${Number(it.valeur) || 0}%;background:#${esc(it.couleur || "38bdf8")}"></div></div>
+            <div class="bar-track"><div class="bar-fill" style="width:${safeWidth}%;background:#${safeColor}"></div></div>
           </div>
-        `).join("") : `<div class="muted">Aucune répartition disponible pour ce contrat.</div>`}
+        `;
+        }).join("") : `<div class="muted">Aucune répartition disponible pour ce contrat.</div>`}
       </div>
     `;
 
+    const isAdmin = this._isAdmin;
     return `
       <div class="kpi-grid">
         ${renderList("⚡ Répartition Usages Électricité", elecItems)}
@@ -290,11 +309,13 @@ class DomoLinkEngiePanel extends HTMLElement {
       <div class="card" style="margin-top:16px">
         <div class="card-top"><span class="kicker">📈 Import Rétroactif Home Assistant Recorder</span></div>
         <p class="muted" style="margin:6px 0 14px">Injecte ou répare les statistiques long-terme dans le Tableau de bord Énergie de Home Assistant (sans doublons, avec continuité de somme cumulée).</p>
-        <div class="actions">
-          <button class="btn" data-import="6">Importer 6 mois</button>
-          <button class="btn primary" data-import="12">Importer 12 mois</button>
-          <button class="btn" data-import="24">Importer 24 mois</button>
-        </div>
+        ${isAdmin ? `
+          <div class="actions">
+            <button class="btn" data-import="6">Importer 6 mois</button>
+            <button class="btn primary" data-import="12">Importer 12 mois</button>
+            <button class="btn" data-import="24">Importer 24 mois</button>
+          </div>
+        ` : `<div class="muted">🔒 Action réservée aux administrateurs Home Assistant.</div>`}
       </div>
     `;
   }
@@ -496,9 +517,11 @@ class DomoLinkEngiePanel extends HTMLElement {
             <span class="pill ${zl.detected ? "ok" : "neutral"}">
               ${zl.detected ? `${zl.matched_count || 0} capteur(s) ZLinky détecté(s) (${zl.active_count || 0} en ligne)` : "Aucun ZLinky détecté"}
             </span>
-            <button class="btn" id="zlinky-autodetect-btn" title="Relancer l'auto-détection complète des entités ZLinky_TIC">🔍 Auto-détecter ZLinky_TIC</button>
+            ${this._isAdmin ? `<button class="btn" id="zlinky-autodetect-btn" title="Relancer l'auto-détection complète des entités ZLinky_TIC">🔍 Auto-détecter ZLinky_TIC</button>` : ""}
           </div>
         </div>
+
+        ${!this._isAdmin ? `<div class="muted" style="margin-bottom:12px;">🔒 Lecture seule : la modification de la configuration ZLinky_TIC est réservée aux administrateurs Home Assistant.</div>` : ""}
 
         ${zl.detected ? `
           <div class="zlive-box">
@@ -517,14 +540,14 @@ class DomoLinkEngiePanel extends HTMLElement {
 
         <div class="zform-top">
           <label class="chk" style="font-size:13px;font-weight:700;color:#f8fafc;">
-            <input type="checkbox" id="zl-enabled" ${zEnabled ? "checked" : ""} />
+            <input type="checkbox" id="zl-enabled" ${zEnabled ? "checked" : ""} ${this._isAdmin ? "" : "disabled"} />
             Activer la fusion Temps Réel ZLinky_TIC dans le Moniteur Énergie
           </label>
 
           <div class="zprefix-row">
             ${zDevices.length ? `
               <label style="flex:1;min-width:240px;">Appareils ZLinky / TIC détectés dans Home Assistant
-                <select id="zl-device-select">
+                <select id="zl-device-select" ${this._isAdmin ? "" : "disabled"}>
                   <option value="">-- Sélectionner un appareil détecté --</option>
                   ${zDevices
                     .map(
@@ -536,7 +559,7 @@ class DomoLinkEngiePanel extends HTMLElement {
               </label>
             ` : ""}
             <label style="flex:1;min-width:240px;">Nom / Préfixe du capteur ZLinky_TIC (Z2M, ZHA, deCONZ)
-              <input type="text" id="zl-prefix-input" value="${esc(activePrefix)}" placeholder="ex: zlinky_tic ou lixee_zlinky_tic" />
+              <input type="text" id="zl-prefix-input" value="${esc(activePrefix)}" placeholder="ex: zlinky_tic ou lixee_zlinky_tic" ${this._isAdmin ? "" : "disabled"} />
             </label>
           </div>
         </div>
@@ -562,6 +585,7 @@ class DomoLinkEngiePanel extends HTMLElement {
                     data-zslot-key="${esc(slot.key)}"
                     value="${esc(slot.entity_id || "")}"
                     placeholder="${esc(slot.hint || "sensor.zlinky_tic_...")}"
+                    ${this._isAdmin ? "" : "disabled"}
                   />
                   <div class="zslot-hint">${esc(slot.hint || "")}</div>
                 </div>
@@ -572,10 +596,12 @@ class DomoLinkEngiePanel extends HTMLElement {
 
         <div class="actions" style="margin-top:16px;justify-content:space-between;">
           <span class="muted">Astuce : laissez un champ vide pour utiliser l'auto-détection, ou saisissez/sélectionnez n'importe quelle entité <code>sensor.*</code> de Home Assistant.</span>
-          <div class="actions">
-            <button class="btn" id="zlinky-clear-btn">♻️ Réinitialiser en Tout-Auto</button>
-            <button class="btn primary" id="zlinky-save-btn">💾 Enregistrer la configuration ZLinky_TIC</button>
-          </div>
+          ${this._isAdmin ? `
+            <div class="actions">
+              <button class="btn" id="zlinky-clear-btn">♻️ Réinitialiser en Tout-Auto</button>
+              <button class="btn primary" id="zlinky-save-btn">💾 Enregistrer la configuration ZLinky_TIC</button>
+            </div>
+          ` : ""}
         </div>
       </div>
 
@@ -607,7 +633,8 @@ class DomoLinkEngiePanel extends HTMLElement {
           this._hass,
           this._moniteurState,
           {},
-          () => this._renderMoniteurInPlace()
+          () => this._renderMoniteurInPlace(),
+          this._getLiveCache()
         )}</div>`;
       } else if (this._activeTab === "overview") bodyHtml = this._renderOverview(acc);
       else if (this._activeTab === "history") bodyHtml = this._renderHistoryUsages(acc);
@@ -679,7 +706,7 @@ class DomoLinkEngiePanel extends HTMLElement {
             <div class="brand-icon">⚡</div>
             <div>
               <h1>DomoLink ENGIE</h1>
-              <p>Électricité Linky · ZLinky_TIC Live · Gaz Gazpar · Facturation · Suite DomoLink v${esc(this._snapshot?.version || "1.3.0")}</p>
+              <p>Électricité Linky · ZLinky_TIC Live · Gaz Gazpar · Facturation · Suite DomoLink v${esc(this._snapshot?.version || "1.3.2")}</p>
             </div>
           </div>
           <div class="actions">
@@ -688,7 +715,7 @@ class DomoLinkEngiePanel extends HTMLElement {
                 ${accs.map((a) => `<option value="${esc(a.entry_id)}" ${a.entry_id === acc?.entry_id ? "selected" : ""}>Contrat ${esc(a.compte_contrat)} (${esc(a.ville)})</option>`).join("")}
               </select>
             ` : ""}
-            <button class="btn primary" id="refresh-btn">${this._loading ? "⏳ Synchro..." : "🔄 Actualiser"}</button>
+            ${this._isAdmin ? `<button class="btn primary" id="refresh-btn">${this._loading ? "⏳ Synchro..." : "🔄 Actualiser"}</button>` : ""}
           </div>
         </div>
 
@@ -718,7 +745,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       this._render();
     });
     this.shadowRoot.getElementById("refresh-btn")?.addEventListener("click", async () => {
-      if (!this._hass) return;
+      if (!this._hass || !this._isAdmin) return;
       this._loading = true;
       this._render();
       try {
@@ -753,6 +780,7 @@ class DomoLinkEngiePanel extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-import]").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        if (!this._hass || !this._isAdmin) return;
         const months = Number(btn.getAttribute("data-import") || 12);
         try {
           const res = await this._hass.callWS({
@@ -775,7 +803,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       devSelect?.addEventListener("change", async (e) => {
         const chosenPrefix = e.target.value;
         if (prefInput) prefInput.value = chosenPrefix;
-        if (!this._hass) return;
+        if (!this._hass || !this._isAdmin) return;
         try {
           const res = await this._hass.callWS({
             type: "domolink_engie/save_zlinky_config",
@@ -792,7 +820,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       });
 
       const triggerAutoReset = async () => {
-        if (!this._hass) return;
+        if (!this._hass || !this._isAdmin) return;
         try {
           const res = await this._hass.callWS({
             type: "domolink_engie/save_zlinky_config",
@@ -813,7 +841,7 @@ class DomoLinkEngiePanel extends HTMLElement {
       this.shadowRoot.getElementById("zlinky-clear-btn")?.addEventListener("click", triggerAutoReset);
 
       this.shadowRoot.getElementById("zlinky-save-btn")?.addEventListener("click", async () => {
-        if (!this._hass) return;
+        if (!this._hass || !this._isAdmin) return;
         const enabledEl = this.shadowRoot.getElementById("zl-enabled");
         const payload = {
           type: "domolink_engie/save_zlinky_config",

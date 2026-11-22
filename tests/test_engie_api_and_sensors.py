@@ -1,6 +1,7 @@
 """Unit tests for DomoLink ENGIE Électricité & Gaz integration."""
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 from datetime import datetime, timezone
@@ -103,10 +104,15 @@ def _install_ha_stubs() -> None:
     class UnitOfTemperature:
         CELSIUS = "°C"
 
+    class EntityCategory:
+        DIAGNOSTIC = "diagnostic"
+        CONFIG = "config"
+
     const_mod.UnitOfEnergy = UnitOfEnergy
     const_mod.UnitOfVolume = UnitOfVolume
     const_mod.UnitOfApparentPower = UnitOfApparentPower
     const_mod.UnitOfTemperature = UnitOfTemperature
+    const_mod.EntityCategory = EntityCategory
     sys.modules["homeassistant.const"] = const_mod
 
     core_mod = types.ModuleType("homeassistant.core")
@@ -116,6 +122,7 @@ def _install_ha_stubs() -> None:
 
     ce_mod = types.ModuleType("homeassistant.config_entries")
     ce_mod.ConfigEntry = object
+    ce_mod.ConfigFlowResult = dict
 
     class ConfigFlow:
         def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -141,15 +148,15 @@ def _install_ha_stubs() -> None:
 
     aio_mod = types.ModuleType("homeassistant.helpers.aiohttp_client")
     aio_mod.async_get_clientsession = MagicMock()
+    aio_mod.async_create_clientsession = MagicMock()
     sys.modules["homeassistant.helpers.aiohttp_client"] = aio_mod
+
+    dr_mod = types.ModuleType("homeassistant.helpers.device_registry")
+    dr_mod.DeviceInfo = dict
+    sys.modules["homeassistant.helpers.device_registry"] = dr_mod
 
     ent_mod = types.ModuleType("homeassistant.helpers.entity")
     ent_mod.DeviceInfo = dict
-
-    class EntityCategory:
-        DIAGNOSTIC = "diagnostic"
-        CONFIG = "config"
-
     ent_mod.EntityCategory = EntityCategory
     sys.modules["homeassistant.helpers.entity"] = ent_mod
 
@@ -248,6 +255,39 @@ def _install_ha_stubs() -> None:
         k: ("**REDACTED**" if k in keys else v) for k, v in d.items()
     }
     sys.modules["homeassistant.components.diagnostics"] = diag_mod
+
+    ws_mod = types.ModuleType("homeassistant.components.websocket_api")
+    ws_mod._commands = []
+
+    def _ws_cmd(schema):
+        def _dec(fn):
+            fn._ws_schema = schema
+            return fn
+        return _dec
+
+    def _require_admin(fn):
+        async def _wrapper(hass, connection, msg):
+            user = getattr(connection, "user", None)
+            if not getattr(user, "is_admin", False):
+                connection.send_error(msg["id"], "unauthorized", "Unauthorized")
+                return
+            return await fn(hass, connection, msg)
+        _wrapper._require_admin = True
+        _wrapper._wrapped = fn
+        return _wrapper
+
+    def _async_response(fn):
+        return fn
+
+    def _async_register_command(hass, handler):
+        ws_mod._commands.append(handler)
+
+    ws_mod.websocket_command = _ws_cmd
+    ws_mod.require_admin = _require_admin
+    ws_mod.async_response = _async_response
+    ws_mod.async_register_command = _async_register_command
+    ws_mod.ActiveConnection = object
+    sys.modules["homeassistant.components.websocket_api"] = ws_mod
 
 
 _install_ha_stubs()
@@ -827,5 +867,167 @@ def test_v13_new_sensors_hphc_regularisation_erl_and_initial_sum():
     assert by_key["ext_temperature"].value_fn(mock_data) == 11.4
     assert by_key["erl_avg_power"].value_fn(mock_data) == 680.0
     assert by_key["account_regularisation_estimee"].value_fn(mock_data) is not None
+
+
+def test_v132_security_pii_and_hardcoded_secrets():
+    """Verify hardcoded client secrets are removed, TO_REDACT masks all PII, and account_solde drops titulaire/adresse."""
+    assert not hasattr(const, "DIG_ID_CLIENT")
+    assert not hasattr(const, "DIG_SECRET_CLIENT")
+
+    for field in (
+        "ref_bp",
+        "compte_contrat",
+        "id_personne",
+        "code_postal",
+        "ville",
+        "adresse",
+        "titulaire",
+        "pdl",
+        "pce",
+        "numero_serie",
+    ):
+        assert field in diagnostics.TO_REDACT
+
+    by_key = {d.key: d for d in sensor.SENSOR_DESCRIPTIONS}
+    solde_attrs = by_key["account_solde"].attrs_fn(
+        {
+            "summary": {
+                "prenom": "Jean",
+                "nom": "Dupont",
+                "adresse_complete": "12 Rue de la Paix, 75001 Paris",
+                "ref_bp": "100200300",
+                "compte_contrat": "600123456",
+                "type_tarif": "OM_AND_TR",
+            },
+            "billing": {"solde": {"solde": 0.0, "soldeCE": 0.0}},
+        }
+    )
+    assert "titulaire" not in solde_attrs
+    assert "adresse" not in solde_attrs
+
+    ext_temp_desc = by_key["ext_temperature"]
+    assert ext_temp_desc.device_class == "temperature"
+    assert ext_temp_desc.native_unit_of_measurement == "°C"
+
+
+def test_v132_ws_admin_requirements_and_entry_id_validation():
+    """Verify ws_save_zlinky_config, ws_import_history, ws_refresh_now require admin and validate entry_id."""
+    ws_mod = sys.modules["homeassistant.components.websocket_api"]
+    ws_mod._commands.clear()
+    init_mod = _load_mod("__init__")
+
+    fake_hass = MagicMock()
+    fake_hass.data = {const.DOMAIN: {}}
+    init_mod._register_websocket_commands(fake_hass)
+    assert fake_hass.data[const.DOMAIN]["ws_registered"] is True
+
+    by_type = {}
+    for cmd in ws_mod._commands:
+        schema = getattr(cmd, "_ws_schema", None) or getattr(getattr(cmd, "_wrapped", None), "_ws_schema", {})
+        for k, v in schema.items():
+            if str(k) == "type":
+                by_type[v] = cmd
+
+    assert len(by_type) == 4
+    assert getattr(by_type[f"{const.DOMAIN}/get_snapshot"], "_require_admin", False) is False
+    for admin_cmd in ("refresh_now", "import_history", "save_zlinky_config"):
+        handler = by_type[f"{const.DOMAIN}/{admin_cmd}"]
+        assert getattr(handler, "_require_admin", False) is True
+
+        non_admin_conn = MagicMock()
+        non_admin_conn.user = types.SimpleNamespace(is_admin=False)
+        asyncio.run(handler(fake_hass, non_admin_conn, {"id": 1, "entry_id": "missing"}))
+        non_admin_conn.send_error.assert_called_once_with(1, "unauthorized", "Unauthorized")
+
+    # Admin calling save_zlinky_config with unknown entry_id -> not_found
+    admin_conn = MagicMock()
+    admin_conn.user = types.SimpleNamespace(is_admin=True)
+    asyncio.run(
+        by_type[f"{const.DOMAIN}/save_zlinky_config"](
+            fake_hass, admin_conn, {"id": 2, "entry_id": "unknown_entry"}
+        )
+    )
+    admin_conn.send_error.assert_called_once()
+    assert admin_conn.send_error.call_args[0][1] == "not_found"
+
+
+def test_v132_refresh_lock_concurrency_single_refresh():
+    """Verify 5 concurrent 401 responses trigger only 1 OAuth token refresh via _refresh_lock."""
+    class FakeResp:
+        def __init__(self, status: int, data: Any = None, set_cookies: list[str] | None = None):
+            self.status = status
+            self._data = data if data is not None else {}
+            self._set_cookies = set_cookies or []
+            self.headers = self
+
+        def getall(self, name: str, default=None):
+            return self._set_cookies if name.lower() == "set-cookie" else (default or [])
+
+        async def json(self, content_type=None):
+            return self._data
+
+        async def text(self):
+            return json.dumps(self._data)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class ConcurrentSession:
+        def __init__(self):
+            self.token_refresh_calls = 0
+
+        def post(self, url, **kwargs):
+            if "oauth/v1/token" in url:
+                self.token_refresh_calls += 1
+                return FakeResp(
+                    200,
+                    {"access_token": "acc_new", "refresh_token": "ref_new", "expires_in": 3600},
+                )
+            return FakeResp(200, {"status": "OK"}, set_cookies=["ClientIDCookie=new_ck; Path=/"])
+
+        def request(self, method, url, **kwargs):
+            auth = (kwargs.get("headers") or {}).get("Authorization", "")
+            if auth == "Bearer acc_old":
+                return FakeResp(401, {"error": "expired"})
+            return FakeResp(200, {"ok": True})
+
+    async def _run():
+        sess = ConcurrentSession()
+        client = engie_api.EngieApiClient(
+            sess,
+            access_token="acc_old",
+            refresh_token="ref_old",
+            token_expires_at=9999999999.0,
+        )
+        client._cookies["ClientIDCookie"] = "old_ck"
+        results = await asyncio.gather(
+            *[client._async_request("GET", "/dvmobile-ws/api/private/test") for _ in range(5)]
+        )
+        assert all(r == {"ok": True} for r in results)
+        assert sess.token_refresh_calls == 1
+
+    asyncio.run(_run())
+
+
+def test_v132_no_blocking_isdir_in_async_functions():
+    """Verify no synchronous os.path.isdir calls remain inside async def functions."""
+    for fname in os.listdir(COMP_DIR):
+        if not fname.endswith(".py"):
+            continue
+        fpath = os.path.join(COMP_DIR, fname)
+        with open(fpath, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=fpath)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute):
+                        if inner.func.attr == "isdir":
+                            raise AssertionError(
+                                f"Blocking os.path.isdir found in async def {node.name} in {fname}:{inner.lineno}"
+                            )
+
 
 

@@ -1,14 +1,14 @@
-# DomoLink ENGIE Électricité & Gaz (`domolink_engie`) — v1.3.0
+# DomoLink ENGIE Électricité & Gaz (`domolink_engie`) — v1.3.2
 
 Intégration personnalisée Home Assistant pour suivre en détail votre consommation **Électricité (Linky)** et **Gaz (Gazpar)**, vos tarifs, votre facturation ENGIE Particuliers (France), coupler un capteur **ZLinky_TIC (Zigbee2MQTT / ZHA / deCONZ / TIC)** en temps réel, et importer votre historique complet directement dans le **Tableau de bord Énergie** de Home Assistant.
 
 ## Fonctionnalités principales
 
-- **Authentification Okta OIDC PKCE sécurisée** : gestion intégrée du code MFA (SMS / E-mail) **une seule fois à l'installation**, avec renouvellement silencieux automatique via `refresh_token` (`offline_access`).
+- **Authentification Okta OIDC PKCE sécurisée** : gestion intégrée du code MFA (SMS / E-mail / TOTP) **une seule fois à l'installation**, avec renouvellement silencieux automatique via `refresh_token` (`offline_access`).
 - **Panneau latéral "DomoLink ENGIE" & Carte Lovelace `custom:domolink-engie-card`** :
-  - **5 onglets interactifs** : *⚡ Moniteur Énergie*, *📊 Consommations (24h, 7J, 30J, 12M + comparatif N-1)*, *🥧 Répartition par usage*, *💶 Tarifs & Factures*, et *⚙️ Paramétrage & ZLinky_TIC*.
+  - **6 onglets interactifs** : *⚡ Moniteur Énergie*, *📋 Vue d'ensemble ENGIE*, *📊 Historique & Usages*, *💶 Facturation & Échéancier*, *🎨 Générateur Lovelace* et *⚙️ Paramétrage & ZLinky_TIC*.
 - **Intégration Temps Réel ZLinky_TIC (Zigbee2MQTT, ZHA, deCONZ/Dresden, Téléinfo TIC)** :
-  - **Auto-détection intelligente** de votre module ZLinky_TIC et de ses 11 capteurs clés (`SINSTS` VA, `W`, `URMS1` V, `IRMS1` A, `EAST` Total kWh, `EASF01` HC kWh, `EASF02` HP kWh, `PTEC` période tarifaire HP/HC en cours, `SMAXSN` pic journalier VA, `PREF`/`ISOUSC` puissance souscrite kVA, `CCASN` courbe de charge).
+  - **Auto-détection intelligente** de votre module ZLinky_TIC et de ses 11 capteurs clés (`SINSTS` VA/W, `IRMS1` A, `URMS1` V, `EAST` Total kWh, `EASF01` HC kWh, `EASF02` HP kWh, `PTEC`/`LTARF` période tarifaire HP/HC en cours, `SMAXSN` pic journalier VA, `PREF`/`ISOUSC` puissance souscrite kVA/A, énergie quotidienne optionnelle, `DEMAIN` couleur Tempo optionnelle).
   - **Sélection & surcharge manuelle** directement depuis l'onglet **⚙️ Paramétrage & ZLinky_TIC** du panneau latéral (ou via les options de l'intégration Home Assistant) avec autocomplétion des entités HA, normalisation automatique des unités (`Wh` → `kWh`, `A` → `kVA`) et calcul de la consommation du jour en direct.
 - **Capteurs reconnus nativement par le Tableau de bord Énergie HA** :
   - **Électricité** : Index Linky Total / Heures Pleines / Heures Creuses (`kWh`, `ENERGY`, `TOTAL_INCREASING`), consommation veille (Totale, HP, HC et taux d'optimisation HC `%`) et mensuelle, coût en `EUR`, tarifs exacts Base / HP / HC (`EUR/kWh`), abonnement (`EUR`), température extérieure moyenne (`°C`), empreinte carbone, variation `%`.

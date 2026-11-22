@@ -34,7 +34,6 @@ from .coordinator import EngieDataUpdateCoordinator
 from .engie_api import (
     EngieApiClient,
     async_create_engie_aiohttp_session,
-    create_engie_aiohttp_session,
 )
 from .zlinky import detect_and_resolve_zlinky
 
@@ -122,11 +121,12 @@ def _build_account_snapshot(
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
     """Register static frontend assets, sidebar panel (all users), and custom Lovelace card."""
-    if hass.data.get(f"{DOMAIN}_frontend_registered"):
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get("static_registered") and domain_data.get("panel_registered"):
         return
 
     frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
-    if not os.path.isdir(frontend_dir):
+    if not await hass.async_add_executor_job(os.path.isdir, frontend_dir):
         return
 
     try:
@@ -136,42 +136,44 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         return
 
     try:
-        if hasattr(hass.http, "async_register_static_paths"):
-            await hass.http.async_register_static_paths(
-                [StaticPathConfig(FRONTEND_URL_PATH, frontend_dir, cache_headers=False)]
+        if not domain_data.get("static_registered"):
+            if hasattr(hass.http, "async_register_static_paths"):
+                await hass.http.async_register_static_paths(
+                    [StaticPathConfig(FRONTEND_URL_PATH, frontend_dir, cache_headers=False)]
+                )
+
+            if hasattr(frontend, "add_extra_js_url"):
+                frontend.add_extra_js_url(
+                    hass, f"{FRONTEND_URL_PATH}/{CARD_FILE_NAME}?v={VERSION}"
+                )
+
+            domain_data["static_registered"] = True
+
+        if not domain_data.get("panel_registered"):
+            frontend.async_register_built_in_panel(
+                hass,
+                component_name="custom",
+                sidebar_title=PANEL_TITLE,
+                sidebar_icon=PANEL_ICON,
+                frontend_url_path=PANEL_URL_PATH,
+                config={
+                    "_panel_custom": {
+                        "name": PANEL_NAME,
+                        "module_url": f"{FRONTEND_URL_PATH}/{PANEL_FILE_NAME}?v={VERSION}",
+                    }
+                },
+                require_admin=False,
+                update=True,
             )
-        elif hasattr(hass.http, "register_static_path"):
-            hass.http.register_static_path(FRONTEND_URL_PATH, frontend_dir, cache_headers=False)
-
-        frontend.async_register_built_in_panel(
-            hass,
-            component_name="custom",
-            sidebar_title=PANEL_TITLE,
-            sidebar_icon=PANEL_ICON,
-            frontend_url_path=PANEL_URL_PATH,
-            config={
-                "_panel_custom": {
-                    "name": PANEL_NAME,
-                    "module_url": f"{FRONTEND_URL_PATH}/{PANEL_FILE_NAME}?v={VERSION}",
-                }
-            },
-            require_admin=False,
-            update=True,
-        )
-
-        if hasattr(frontend, "add_extra_js_url"):
-            frontend.add_extra_js_url(
-                hass, f"{FRONTEND_URL_PATH}/{CARD_FILE_NAME}?v={VERSION}"
-            )
-
-        hass.data[f"{DOMAIN}_frontend_registered"] = True
+            domain_data["panel_registered"] = True
     except Exception as err:
         _LOGGER.debug("DomoLink ENGIE frontend registration notice: %s", err)
 
 
 def _register_websocket_commands(hass: HomeAssistant) -> None:
     """Register WebSocket commands used by the DomoLink ENGIE sidebar panel."""
-    if hass.data.get(f"{DOMAIN}_ws_registered"):
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get("ws_registered"):
         return
 
     try:
@@ -212,6 +214,7 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
             vol.Optional("entry_id"): str,
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def ws_refresh_now(
         hass: HomeAssistant,
@@ -231,6 +234,7 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
             vol.Optional("months", default=12): vol.All(int, vol.Range(min=1, max=36)),
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def ws_import_history(
         hass: HomeAssistant,
@@ -246,21 +250,28 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
     @websocket_api.websocket_command(
         {
             vol.Required("type"): f"{DOMAIN}/save_zlinky_config",
-            vol.Optional("entry_id"): str,
+            vol.Required("entry_id"): str,
             vol.Optional("reset_auto", default=False): bool,
             vol.Optional(CONF_ZLINKY_ENABLED, default=True): bool,
             vol.Optional(CONF_ZLINKY_DEVICE_PREFIX, default=""): str,
             **{vol.Optional(k, default=""): str for k in ZLINKY_SENSOR_KEYS},
         }
     )
+    @websocket_api.require_admin
     @websocket_api.async_response
     async def ws_save_zlinky_config(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
+        entry_id = msg["entry_id"]
+        coords = _iter_coordinators(entry_id)
+        if not coords:
+            connection.send_error(msg["id"], "not_found", f"Unknown entry_id: {entry_id}")
+            return
+
         reset_auto = bool(msg.get("reset_auto", False))
-        for _, coord in _iter_coordinators(msg.get("entry_id")):
+        for _, coord in coords:
             new_opts = dict(getattr(coord.entry, "options", None) or {})
             new_opts[CONF_ZLINKY_ENABLED] = bool(msg.get(CONF_ZLINKY_ENABLED, True))
             new_opts[CONF_ZLINKY_DEVICE_PREFIX] = "" if reset_auto else str(msg.get(CONF_ZLINKY_DEVICE_PREFIX, "")).strip()
@@ -285,7 +296,7 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_refresh_now)
     websocket_api.async_register_command(hass, ws_import_history)
     websocket_api.async_register_command(hass, ws_save_zlinky_config)
-    hass.data[f"{DOMAIN}_ws_registered"] = True
+    domain_data["ws_registered"] = True
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -333,15 +344,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_IMPORT_HISTORY):
         async def _handle_import_history(call: ServiceCall) -> None:
             months = int(call.data.get("months", 12))
-            for coord in hass.data.get(DOMAIN, {}).values():
+            target_entry_id = call.data.get("entry_id")
+            for eid, coord in hass.data.get(DOMAIN, {}).items():
                 if isinstance(coord, EngieDataUpdateCoordinator):
+                    if target_entry_id and eid != target_entry_id:
+                        continue
                     await coord.async_import_full_history(months=months)
 
         hass.services.async_register(
             DOMAIN,
             SERVICE_IMPORT_HISTORY,
             _handle_import_history,
-            schema=vol.Schema({vol.Optional("months", default=12): vol.All(int, vol.Range(min=1, max=36))}),
+            schema=vol.Schema(
+                {
+                    vol.Optional("entry_id"): str,
+                    vol.Optional("months", default=12): vol.All(int, vol.Range(min=1, max=36)),
+                }
+            ),
         )
 
     return True
@@ -366,7 +385,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 from homeassistant.components import frontend
 
                 frontend.async_remove_panel(hass, PANEL_URL_PATH)
-                hass.data.pop(f"{DOMAIN}_frontend_registered", None)
+                hass.data[DOMAIN].pop("panel_registered", None)
             except Exception:
                 pass
     return unload_ok

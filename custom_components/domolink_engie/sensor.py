@@ -16,12 +16,14 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    EntityCategory,
     UnitOfApparentPower,
     UnitOfEnergy,
+    UnitOfTemperature,
     UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -588,8 +590,9 @@ SENSOR_DESCRIPTIONS: tuple[EngieSensorDescription, ...] = (
         key="ext_temperature",
         name="Température Extérieure Moyenne",
         device_group="account",
+        device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement="°C",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         suggested_display_precision=1,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:thermometer",
@@ -808,8 +811,6 @@ SENSOR_DESCRIPTIONS: tuple[EngieSensorDescription, ...] = (
         icon="mdi:wallet-outline",
         value_fn=lambda d: safe_float(((d.get("billing") or {}).get("solde") or {}).get("solde")),
         attrs_fn=lambda d: {
-            "titulaire": f"{(d.get('summary') or {}).get('prenom', '')} {(d.get('summary') or {}).get('nom', '')}".strip(),
-            "adresse": (d.get("summary") or {}).get("adresse_complete"),
             "ref_bp": (d.get("summary") or {}).get("ref_bp"),
             "compte_contrat": (d.get("summary") or {}).get("compte_contrat"),
             "type_tarif": (d.get("summary") or {}).get("type_tarif"),

@@ -1,6 +1,7 @@
 """Async API Client for ENGIE Particuliers (Okta OIDC PKCE + DVMobile + ERL)."""
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Awaitable, Callable
 import hashlib
@@ -211,6 +212,7 @@ class EngieApiClient:
         self._ref_bp: str = ""
         self._compte_contrat: str = ""
         self._id_personne: str = ""
+        self._refresh_lock = asyncio.Lock()
 
     def set_account_context(
         self,
@@ -290,29 +292,35 @@ class EngieApiClient:
         compte_contrat: str = "",
         id_personne: str = "",
         force: bool = False,
+        failed_cookie: str | None = None,
     ) -> None:
         """Initialize ClientIDCookie via /digital-common-ws/api-management/creation-cookie."""
         if not id_personne and self.access_token:
             id_personne = extract_id_personne_from_jwt(self.access_token)
         self.set_account_context(ref_bp=ref_bp, compte_contrat=compte_contrat, id_personne=id_personne)
 
-        if self._cookies.get("ClientIDCookie") and not force:
-            return
-        if not self.access_token:
-            return
+        async with self._refresh_lock:
+            current_cookie = self._cookies.get("ClientIDCookie")
+            if current_cookie:
+                if not force:
+                    return
+                if failed_cookie is not None and current_cookie != failed_cookie:
+                    return
+            if not self.access_token:
+                return
 
-        headers = self._default_headers(is_cookie_init=True)
-        try:
-            async with self._session.post(
-                f"{ENGIE_BASE_URL}{PATH_CREATION_COOKIE}",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                self._capture_set_cookies(resp)
-                if resp.status >= 400:
-                    _LOGGER.debug("creation-cookie returned %s", resp.status)
-        except (aiohttp.ClientError, TimeoutError, TypeError, AttributeError) as err:
-            _LOGGER.debug("creation-cookie notice: %s", err)
+            headers = self._default_headers(is_cookie_init=True)
+            try:
+                async with self._session.post(
+                    f"{ENGIE_BASE_URL}{PATH_CREATION_COOKIE}",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    self._capture_set_cookies(resp)
+                    if resp.status >= 400:
+                        _LOGGER.debug("creation-cookie returned %s", resp.status)
+            except (aiohttp.ClientError, TimeoutError, TypeError, AttributeError) as err:
+                _LOGGER.debug("creation-cookie notice: %s", err)
 
     async def async_login_start(self, username: str, password: str) -> dict[str, Any]:
         """Authenticate username/password via Okta Classic AuthN."""
@@ -488,21 +496,36 @@ class EngieApiClient:
         }
         return await self._async_post_token(token_data)
 
-    async def async_refresh_tokens(self) -> dict[str, Any]:
+    async def async_refresh_tokens(
+        self, failed_access_token: str | None = None
+    ) -> dict[str, Any]:
         """Silently refresh OAuth2 access_token using the stored refresh_token."""
-        if not self.refresh_token:
-            raise EngieAuthError("Aucun refresh_token disponible, ré-authentification requise.")
+        async with self._refresh_lock:
+            # Double-check inside lock: if another coroutine already refreshed, reuse it
+            if (
+                self.access_token
+                and time.time() < self.token_expires_at
+                and (failed_access_token is None or self.access_token != failed_access_token)
+            ):
+                return {
+                    "access_token": self.access_token,
+                    "refresh_token": self.refresh_token,
+                    "id_token": self.id_token,
+                    "token_expires_at": self.token_expires_at,
+                }
+            if not self.refresh_token:
+                raise EngieAuthError("Aucun refresh_token disponible, ré-authentification requise.")
 
-        token_data = {
-            "grant_type": "refresh_token",
-            "client_id": DGP_CLIENT_ID,
-            "refresh_token": self.refresh_token,
-            "scope": DGP_SCOPES,
-        }
-        tokens = await self._async_post_token(token_data)
-        if self._on_token_refresh:
-            await self._on_token_refresh(tokens)
-        return tokens
+            token_data = {
+                "grant_type": "refresh_token",
+                "client_id": DGP_CLIENT_ID,
+                "refresh_token": self.refresh_token,
+                "scope": DGP_SCOPES,
+            }
+            tokens = await self._async_post_token(token_data)
+            if self._on_token_refresh:
+                await self._on_token_refresh(tokens)
+            return tokens
 
     async def _async_post_token(self, form_data: dict[str, str]) -> dict[str, Any]:
         """Exchange authorization code or refresh token at DGP token endpoint."""
@@ -561,6 +584,8 @@ class EngieApiClient:
             await self.async_init_session_cookies()
 
         url = f"{ENGIE_BASE_URL}{path}"
+        used_access_token = self.access_token
+        used_cookie = self._cookies.get("ClientIDCookie")
         headers = self._default_headers(is_erl=is_erl)
 
         clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None}
@@ -578,8 +603,8 @@ class EngieApiClient:
 
                 if resp.status == 401 and _retry and self.refresh_token:
                     _LOGGER.debug("ENGIE API %s returned 401, refreshing token & cookies...", path)
-                    await self.async_refresh_tokens()
-                    await self.async_init_session_cookies(force=True)
+                    await self.async_refresh_tokens(failed_access_token=used_access_token)
+                    await self.async_init_session_cookies(force=True, failed_cookie=used_cookie)
                     return await self._async_request(
                         method,
                         path,

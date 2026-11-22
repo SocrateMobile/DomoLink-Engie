@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DOMAIN = "domolink_engie"
-VERSION = "1.3.0"
+VERSION = "1.3.2"
 PLATFORMS: list[str] = ["sensor", "binary_sensor"]
 
 # Frontend Panel & Lovelace Card
@@ -74,8 +74,6 @@ DGP_SCOPES = "openid profile offline_access idb2c apihour:read apihour:write"
 ENGIE_BASE_URL = "https://particuliers.engie.fr"
 ENGIE_USER_AGENT = "Mozilla/9.6.3 (Linux; Android 14; Pixel 7 Build/UP1A)"
 ENGIE_HTTP_HEADER_LIMIT = 32768
-DIG_ID_CLIENT = "DVMOBILE"
-DIG_SECRET_CLIENT = "aC2KcDe!"
 DEMANDEUR_COOKIE = "PARTICULIERS_ANDROID"
 DEMANDEUR_DVMOBILE = "MOBILE_ANDROID"
 DEMANDEUR_ERL = "ECARE4ERL-ANDROID"
