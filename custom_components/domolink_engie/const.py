@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DOMAIN = "domolink_engie"
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 PLATFORMS: list[str] = ["sensor", "binary_sensor"]
 
 # Frontend Panel & Lovelace Card
